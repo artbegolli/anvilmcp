@@ -198,9 +198,15 @@ func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteR
 			return nil, fmt.Errorf("file does not exist and create is false")
 		}
 
-		// Create directory if needed
+		// SECURITY FIX #1: Validate parent directory path against policy before creation
 		dir := filepath.Dir(absPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		dirDecision := t.engine.ResolvePath(dir, "write")
+		if !dirDecision.Allowed {
+			return nil, fmt.Errorf("parent directory access denied: operation not permitted (rule: %s)", dirDecision.PolicyRule)
+		}
+
+		// Create directory with validated path
+		if err := os.MkdirAll(dirDecision.AbsPath, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 	}

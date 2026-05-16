@@ -3,7 +3,10 @@ package policy
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -65,18 +68,40 @@ func (l *Loader) Effective() *Policy {
 }
 
 func (l *Loader) loadPolicy(path string) (*Policy, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate file ownership
+	// SECURITY FIX #3: Validate file ownership and permissions BEFORE reading
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse YAML
+	// Check file permissions (must not be world or group writable)
+	if info.Mode().Perm()&0022 != 0 {
+		return nil, fmt.Errorf("policy file is world or group writable: %o", info.Mode().Perm())
+	}
+
+	// Check file ownership
+	stat := info.Sys().(*syscall.Stat_t)
+	currentUser, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	currentUID, err := strconv.Atoi(currentUser.Uid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse current UID: %w", err)
+	}
+
+	// Policy file must be owned by current user or root (UID 0)
+	if stat.Uid != uint32(currentUID) && currentUID != 0 {
+		return nil, fmt.Errorf("policy file must be owned by current user or root, got UID %d", stat.Uid)
+	}
+
+	// Read and parse policy
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
 	var policy Policy
 	if err := yaml.Unmarshal(data, &policy); err != nil {
 		return nil, fmt.Errorf("failed to parse policy YAML: %w", err)
@@ -86,8 +111,6 @@ func (l *Loader) loadPolicy(path string) (*Policy, error) {
 	if policy.Version != 1 {
 		return nil, fmt.Errorf("unsupported policy version: %d", policy.Version)
 	}
-
-	_ = info // TODO: check file ownership
 
 	return &policy, nil
 }

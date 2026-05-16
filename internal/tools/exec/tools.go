@@ -24,18 +24,27 @@ type Tools struct {
 	logger        *zap.Logger
 	sessionConfig *config.SessionConfig
 
-	concurrentMu sync.Mutex
-	concurrent   int32
-	maxConcurrent int32
+	concurrentMu   sync.Mutex
+	concurrent     int32
+	maxConcurrent  int32
+
+	// SECURITY FIX #6: Rate limiting
+	rateLimitMu         sync.Mutex
+	execHistory         []time.Time
+	maxExecPerSecond    int32
+	maxTotalBytes       int64
+	totalBytesGenerated int64
 }
 
 // NewTools creates a new execution tools handler.
 func NewTools(engine *policy.Engine, logger *zap.Logger, sessConfig *config.SessionConfig, maxConcurrent int) *Tools {
 	return &Tools{
-		engine:        engine,
-		logger:        logger,
-		sessionConfig: sessConfig,
-		maxConcurrent: int32(maxConcurrent),
+		engine:           engine,
+		logger:           logger,
+		sessionConfig:    sessConfig,
+		maxConcurrent:    int32(maxConcurrent),
+		maxExecPerSecond: 10,              // Allow 10 executions per second
+		maxTotalBytes:    1024 * 1024 * 1024, // 1GB per session
 	}
 }
 
@@ -61,6 +70,11 @@ type ShellResponse struct {
 
 // HandleShell handles the exec.shell tool.
 func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellResponse, error) {
+	// Check rate limit BEFORE acquiring concurrent slot
+	if !t.checkRateLimit() {
+		return nil, fmt.Errorf("rate limit exceeded: maximum %d executions per second", t.maxExecPerSecond)
+	}
+
 	// Check concurrent limit
 	if !t.acquireConcurrentSlot() {
 		return nil, fmt.Errorf("max concurrent executions reached")
@@ -97,18 +111,45 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	cmd.Dir = cwd
 
 	// Set environment (filtered through policy)
-	cmdEnv := os.Environ()
+	// SECURITY FIX #5: Start with inherited environment, filtered
+	var cmdEnv []string
+	inherited := os.Environ()
+
+	// Filter inherited environment variables through policy
+	for _, envStr := range inherited {
+		parts := strings.SplitN(envStr, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		k, v := parts[0], parts[1]
+
+		envDecision := t.engine.FilterEnv(k, v)
+		if envDecision.Allowed {
+			cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
+		}
+	}
+
+	// Merge with request-provided environment variables
 	if len(request.Env) > 0 {
-		// Start with the provided env vars, validate each
-		filtered := []string{}
 		for k, v := range request.Env {
 			envDecision := t.engine.FilterEnv(k, v)
 			if envDecision.Allowed {
-				filtered = append(filtered, k+"="+envDecision.Value)
+				// Check if already set from inherited vars
+				found := false
+				for i, envStr := range cmdEnv {
+					if strings.HasPrefix(envStr, k+"=") {
+						cmdEnv[i] = k + "=" + envDecision.Value
+						found = true
+						break
+					}
+				}
+				if !found {
+					cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
+				}
 			}
 		}
-		cmdEnv = filtered
 	}
+
 	cmd.Env = cmdEnv
 
 	// Setup output capture
@@ -146,6 +187,17 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 			exitCode = 1
 		}
 	}
+
+	// Track total output bytes for session limit
+	totalBytes := stdoutLimited.written + stderrLimited.written
+	t.rateLimitMu.Lock()
+	t.totalBytesGenerated += totalBytes
+	if t.totalBytesGenerated > t.maxTotalBytes {
+		t.rateLimitMu.Unlock()
+		return nil, fmt.Errorf("session total output exceeded: %d bytes (limit: %d)",
+			t.totalBytesGenerated, t.maxTotalBytes)
+	}
+	t.rateLimitMu.Unlock()
 
 	return &ShellResponse{
 		ExitCode:    exitCode,
@@ -222,6 +274,16 @@ func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*Scri
 		return nil, fmt.Errorf("failed to chmod script: %w", err)
 	}
 
+	// SECURITY FIX #2: Validate script arguments against exec policy
+	for _, arg := range request.Args {
+		// Check if argument would be denied by policy for the interpreter
+		testDecision := t.engine.EvaluateExec(interpreter, []string{arg})
+		if !testDecision.Allowed {
+			return nil, fmt.Errorf("script argument denied by policy: %s (rule: %s)",
+				testDecision.Reason, testDecision.PolicyRule)
+		}
+	}
+
 	// Execute via interpreter
 	argv := append([]string{tmpfile.Name()}, request.Args...)
 	shellResp, err := t.HandleShell(ctx, &ShellRequest{
@@ -264,6 +326,33 @@ func (t *Tools) acquireConcurrentSlot() bool {
 
 func (t *Tools) releaseConcurrentSlot() {
 	atomic.AddInt32(&t.concurrent, -1)
+}
+
+// checkRateLimit enforces per-second execution rate limiting
+func (t *Tools) checkRateLimit() bool {
+	t.rateLimitMu.Lock()
+	defer t.rateLimitMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-1 * time.Second)
+
+	// Prune old events outside the 1-second window
+	filtered := []time.Time{}
+	for _, tm := range t.execHistory {
+		if tm.After(cutoff) {
+			filtered = append(filtered, tm)
+		}
+	}
+	t.execHistory = filtered
+
+	// Check if we've exceeded the rate limit
+	if int32(len(t.execHistory)) >= t.maxExecPerSecond {
+		return false
+	}
+
+	// Record this execution
+	t.execHistory = append(t.execHistory, now)
+	return true
 }
 
 // limitedWriter caps the amount of data written to avoid memory exhaustion.

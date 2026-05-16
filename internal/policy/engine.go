@@ -80,7 +80,8 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 
 	// Check against deny list first (deny always wins)
 	for _, pattern := range e.policy.Paths.Deny {
-		if pathMatchesPattern(absPath, pattern) {
+		normalizedPattern := filepath.Clean(pattern)
+		if pathMatchesPattern(absPath, normalizedPattern) {
 			return ResolvePathDecision{Allowed: false, AbsPath: absPath, Reason: "matched deny pattern", PolicyRule: "paths.deny:" + pattern}
 		}
 	}
@@ -99,7 +100,8 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 	}
 
 	for _, pattern := range allowList {
-		if pathMatchesPattern(absPath, pattern) {
+		normalizedPattern := filepath.Clean(pattern)
+		if pathMatchesPattern(absPath, normalizedPattern) {
 			return ResolvePathDecision{Allowed: true, AbsPath: absPath, PolicyRule: "paths.allow_" + mode}
 		}
 	}
@@ -202,7 +204,17 @@ func (e *Engine) FilterEnv(name, value string) FilterEnvDecision {
 }
 
 // pathMatchesPattern checks if a path matches a glob pattern, supporting ** for recursive matching.
+// SECURITY FIX #4: Normalize both path and pattern, reject paths with .. sequences
 func pathMatchesPattern(path, pattern string) bool {
+	// Normalize both path and pattern
+	path = filepath.Clean(path)
+	pattern = filepath.Clean(pattern)
+
+	// Reject paths containing .. sequences (already cleaned, so shouldn't occur but be defensive)
+	if strings.Contains(path, "..") {
+		return false
+	}
+
 	// Handle ** patterns (recursive glob)
 	if strings.Contains(pattern, "**") {
 		parts := strings.Split(pattern, "**")
