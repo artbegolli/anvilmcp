@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/artbegolli/anvilmcp/internal/policy"
@@ -12,17 +13,18 @@ import (
 
 func TestResolvePath(t *testing.T) {
 	tmpdir := t.TempDir()
+	workspace := filepath.Join(tmpdir, "workspace")
 
 	p := &policy.Policy{
 		Version: 1,
-		Session: policy.SessionPolicy{CWD: filepath.Join(tmpdir, "workspace")},
+		Session: policy.SessionPolicy{CWD: workspace},
 		Paths: policy.PathsPolicy{
-			WorkspaceRoot: filepath.Join(tmpdir, "workspace"),
-			AllowRead:     []string{filepath.Join(tmpdir, "workspace") + "/**"},
-			AllowWrite:    []string{filepath.Join(tmpdir, "workspace") + "/**"},
+			WorkspaceRoot: workspace,
+			AllowRead:     []string{workspace + "/**"},
+			AllowWrite:    []string{workspace + "/**"},
 			Deny: []string{
-				filepath.Join(tmpdir, "workspace") + "/.git/**",
-				filepath.Join(tmpdir, "workspace") + "/**/.secret",
+				workspace + "/.git/**",
+				workspace + "/**/.secret",
 			},
 		},
 		Exec:   policy.ExecPolicy{Default: "deny"},
@@ -49,21 +51,21 @@ func TestResolvePath(t *testing.T) {
 		},
 		{
 			name:     "absolute path inside workspace",
-			input:    filepath.Join(tmpdir, "workspace", "file.txt"),
+			input:    filepath.Join(workspace, "file.txt"),
 			mode:     "read",
 			allowed:  true,
 			contains: "workspace",
 		},
 		{
 			name:     "denied path: .git",
-			input:    filepath.Join(tmpdir, "workspace", ".git", "config"),
+			input:    filepath.Join(workspace, ".git", "config"),
 			mode:     "read",
 			allowed:  false,
 			contains: "",
 		},
 		{
 			name:     "denied path: .secret file",
-			input:    filepath.Join(tmpdir, "workspace", "dir", ".secret"),
+			input:    filepath.Join(workspace, "dir", ".secret"),
 			mode:     "read",
 			allowed:  false,
 			contains: "",
@@ -107,8 +109,8 @@ func TestListRead(t *testing.T) {
 		Session: policy.SessionPolicy{CWD: workspace},
 		Paths: policy.PathsPolicy{
 			WorkspaceRoot: workspace,
-			AllowRead:     []string{workspace + "/**"},
-			AllowWrite:    []string{workspace + "/**"},
+			AllowRead:     []string{workspace + "/**", workspace},
+			AllowWrite:    []string{workspace + "/**", workspace},
 			Deny:          []string{},
 		},
 		Exec:   policy.ExecPolicy{Default: "deny"},
@@ -121,8 +123,8 @@ func TestListRead(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Test list
-	listResp, err := tools.HandleList(ctx, &ListRequest{Path: "."})
+	// Test list - use absolute path to workspace
+	listResp, err := tools.HandleList(ctx, &ListRequest{Path: workspace})
 	if err != nil {
 		t.Fatalf("HandleList failed: %v", err)
 	}
@@ -132,7 +134,7 @@ func TestListRead(t *testing.T) {
 	}
 
 	// Test read
-	readResp, err := tools.HandleRead(ctx, &ReadRequest{Path: "file1.txt"})
+	readResp, err := tools.HandleRead(ctx, &ReadRequest{Path: filepath.Join(workspace, "file1.txt")})
 	if err != nil {
 		t.Fatalf("HandleRead failed: %v", err)
 	}
@@ -151,16 +153,17 @@ func TestWriteProtection(t *testing.T) {
 	logger := zap.NewNop()
 
 	workspace := filepath.Join(tmpdir, "workspace")
+	dir := filepath.Join(workspace, "dir")
 	os.MkdirAll(workspace, 0755)
 
-	// Policy that denies .secret files
+	// Policy that allows write to workspace and subdirs, but denies .secret files
 	p := &policy.Policy{
 		Version: 1,
 		Session: policy.SessionPolicy{CWD: workspace},
 		Paths: policy.PathsPolicy{
 			WorkspaceRoot: workspace,
-			AllowRead:     []string{workspace + "/**"},
-			AllowWrite:    []string{workspace + "/**"},
+			AllowRead:     []string{workspace + "/**", workspace},
+			AllowWrite:    []string{workspace + "/**", workspace},
 			Deny: []string{
 				workspace + "/**/.secret",
 			},
@@ -175,9 +178,9 @@ func TestWriteProtection(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Attempt to write a .secret file (should be denied)
+	// Attempt to write a .secret file (should be denied by deny list)
 	_, err := tools.HandleWrite(ctx, &WriteRequest{
-		Path:    filepath.Join(workspace, "dir", ".secret"),
+		Path:    filepath.Join(dir, ".secret"),
 		Content: "secret",
 		Create:  ptrBool(true),
 	})
@@ -186,15 +189,19 @@ func TestWriteProtection(t *testing.T) {
 		t.Error("expected write to .secret file to be denied")
 	}
 
-	// Write an allowed file (should succeed)
+	// Write an allowed file in subdirectory (should succeed)
 	resp, err := tools.HandleWrite(ctx, &WriteRequest{
-		Path:    "allowed.txt",
+		Path:    filepath.Join(workspace, "allowed.txt"),
 		Content: "allowed content",
 		Create:  ptrBool(true),
 	})
 
 	if err != nil {
 		t.Errorf("expected write to succeed, got error: %v", err)
+	}
+
+	if resp == nil {
+		t.Fatal("expected resp to not be nil")
 	}
 
 	if resp.BytesWritten != int64(len("allowed content")) {
@@ -289,6 +296,61 @@ func TestDeleteProtection(t *testing.T) {
 	// Verify file is gone
 	if _, err := os.Stat(filepath.Join(workspace, "deleteme.txt")); err == nil {
 		t.Error("expected file to be deleted")
+	}
+}
+
+func TestListLimitValidation(t *testing.T) {
+	tmpdir := t.TempDir()
+	logger := zap.NewNop()
+
+	workspace := filepath.Join(tmpdir, "workspace")
+	os.MkdirAll(workspace, 0755)
+
+	// Create a file to list
+	os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("content"), 0644)
+
+	p := &policy.Policy{
+		Version: 1,
+		Session: policy.SessionPolicy{CWD: workspace},
+		Paths: policy.PathsPolicy{
+			WorkspaceRoot: workspace,
+			AllowRead:     []string{workspace + "/**", workspace},
+			AllowWrite:    []string{workspace + "/**", workspace},
+			Deny:          []string{},
+		},
+		Exec:   policy.ExecPolicy{Default: "deny"},
+		Env:    policy.EnvironmentPolicy{},
+		Kernel: policy.KernelPolicy{},
+		Audit:  policy.AuditPolicy{},
+	}
+
+	engine := policy.NewEngine(p, "")
+	tools := NewTools(engine, logger)
+	ctx := context.Background()
+
+	// Test that excessive limit is rejected
+	largeLimit := 150000
+	_, err := tools.HandleList(ctx, &ListRequest{
+		Path:  workspace,
+		Limit: &largeLimit,
+	})
+
+	if err == nil {
+		t.Error("expected limit validation to reject excessive limit")
+	}
+	if err != nil && !strings.Contains(err.Error(), "limit too large") {
+		t.Errorf("expected 'limit too large' error, got: %v", err)
+	}
+
+	// Test that reasonable limit works
+	reasonableLimit := 100
+	_, err = tools.HandleList(ctx, &ListRequest{
+		Path:  workspace,
+		Limit: &reasonableLimit,
+	})
+
+	if err != nil {
+		t.Errorf("expected list with reasonable limit to succeed, got error: %v", err)
 	}
 }
 
