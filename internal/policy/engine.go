@@ -76,11 +76,36 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 		}
 	} else if err == nil {
 		absPath = evalPath
+	} else if os.IsNotExist(err) {
+		// For non-existent files, try to resolve symlinks in the parent directory
+		parentPath := filepath.Dir(absPath)
+		if parentPath != absPath { // Avoid infinite loop at root
+			if evalParent, parentErr := filepath.EvalSymlinks(parentPath); parentErr == nil {
+				absPath = filepath.Join(evalParent, filepath.Base(absPath))
+			}
+		}
 	}
 
 	// Check against deny list first (deny always wins)
 	for _, pattern := range e.policy.Paths.Deny {
 		normalizedPattern := filepath.Clean(pattern)
+		// Try resolving symlinks in pattern (handling ** globs)
+		if strings.Contains(normalizedPattern, "**") {
+			// For glob patterns, only try to eval the prefix
+			parts := strings.Split(normalizedPattern, "**")
+			prefix := parts[0]
+			hadSeparator := strings.HasSuffix(prefix, string(filepath.Separator))
+			prefix = strings.TrimSuffix(prefix, string(filepath.Separator))
+			if evalPrefix, err := filepath.EvalSymlinks(prefix); err == nil {
+				sep := ""
+				if hadSeparator || len(parts[1]) > 0 {
+					sep = string(filepath.Separator)
+				}
+				normalizedPattern = evalPrefix + sep + "**" + parts[1]
+			}
+		} else if evalPattern, err := filepath.EvalSymlinks(normalizedPattern); err == nil {
+			normalizedPattern = evalPattern
+		}
 		if pathMatchesPattern(absPath, normalizedPattern) {
 			return ResolvePathDecision{Allowed: false, AbsPath: absPath, Reason: "matched deny pattern", PolicyRule: "paths.deny:" + pattern}
 		}
@@ -101,6 +126,23 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 
 	for _, pattern := range allowList {
 		normalizedPattern := filepath.Clean(pattern)
+		// Try resolving symlinks in pattern (handling ** globs)
+		if strings.Contains(normalizedPattern, "**") {
+			// For glob patterns, only try to eval the prefix
+			parts := strings.Split(normalizedPattern, "**")
+			prefix := parts[0]
+			hadSeparator := strings.HasSuffix(prefix, string(filepath.Separator))
+			prefix = strings.TrimSuffix(prefix, string(filepath.Separator))
+			if evalPrefix, err := filepath.EvalSymlinks(prefix); err == nil {
+				sep := ""
+				if hadSeparator || len(parts[1]) > 0 {
+					sep = string(filepath.Separator)
+				}
+				normalizedPattern = evalPrefix + sep + "**" + parts[1]
+			}
+		} else if evalPattern, err := filepath.EvalSymlinks(normalizedPattern); err == nil {
+			normalizedPattern = evalPattern
+		}
 		if pathMatchesPattern(absPath, normalizedPattern) {
 			return ResolvePathDecision{Allowed: true, AbsPath: absPath, PolicyRule: "paths.allow_" + mode}
 		}

@@ -1,0 +1,179 @@
+{
+  "permissions": {
+    "allowlist": {
+      "bash": [
+        "git commit",
+        "git push",
+        "git pull",
+        "git rebase",
+        "git merge",
+        "git status",
+        "git log",
+        "git diff",
+        "git show",
+        "git branch",
+        "git checkout",
+        "git tag",
+        "git add",
+        "git reset",
+        "git stash",
+        "go build",
+        "go test",
+        "go fmt",
+        "go vet",
+        "go run",
+        "go install",
+        "go get",
+        "go mod",
+        "make",
+        "make test",
+        "make build",
+        "make clean",
+        "find",
+        "grep",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "sed",
+        "awk",
+        "cut",
+        "sort",
+        "uniq",
+        "echo",
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+        "chmod",
+        "chown",
+        "pwd",
+        "cd",
+        "tree"
+      ]
+    },
+    "denylist": {
+      "bash": [
+        "rm",
+        "rmdir",
+        "dd",
+        "mkfs",
+        "shred",
+        "fsck",
+        "mount",
+        "umount",
+        "reboot",
+        "shutdown",
+        "kill",
+        "pkill",
+        "killall",
+        "sudo",
+        "passwd",
+        "useradd",
+        "userdel",
+        "groupadd",
+        "groupdel",
+        "vi",
+        "vim",
+        "nano",
+        "visudo",
+        "chroot",
+        "iptables",
+        "firewall-cmd",
+        "semanage",
+        "curl -X POST",
+        "curl -X PUT",
+        "curl -X DELETE",
+        "wget",
+        "nc",
+        "netcat",
+        "ssh",
+        "scp",
+        "sftp",
+        "telnet",
+        "ftp",
+        "ncat",
+        "socat",
+        "openssl s_client"
+      ]
+    }
+  },
+  "environment": {
+    "variables": {
+      "CLAUDE_CODE_MODE": "full"
+    }
+  },
+  "limits": {
+    "commandTimeout": 300000,
+    "maxConcurrentCommands": 5,
+    "maxOutputSize": 10485760
+  },
+  "git": {
+    "allowPush": true,
+    "allowForcePush": false,
+    "requireCommitMessage": true,
+    "defaultAuthor": {
+      "name": "Claude Code",
+      "email": "noreply@anthropic.com"
+    }
+  },
+  "golang": {
+    "allowModuleChanges": true,
+    "allowBuildModifications": true,
+    "testOnBuild": true
+  },
+  "fileOperations": {
+    "allowedDirectories": [
+      "./"
+    ],
+    "deniedDirectories": [
+      "/etc",
+      "/sys",
+      "/proc",
+      "/root",
+      "/home",
+      "~/.ssh",
+      "~/.aws",
+      "~/.azure",
+      "~/.gnupg",
+      "~/.kube",
+      "/var/log"
+    ],
+    "deniedFiles": [
+      ".env",
+      ".env.local",
+      ".env.*.local",
+      "secrets.json",
+      "credentials.json",
+      ".git/config",
+      ".github/workflows",
+      "*.pem",
+      "*.key",
+      "*.pfx",
+      "*.p12"
+    ]
+  },
+  "hooks": {
+    "beforeGitPush": {
+      "enabled": true,
+      "commands": ["git log -1 --pretty=format:%s"]
+    },
+    "afterGitCommit": {
+      "enabled": true,
+      "commands": ["git log -1"]
+    }
+  },
+  "safety": {
+    "confirmDestructiveOps": true,
+    "confirmFileDeletes": true,
+    "preventForcePush": true,
+    "preventResetHard": true,
+    "preventHistoryRewrite": true
+  },
+  "logging": {
+    "enabled": true,
+    "logLevel": "info",
+    "logFile": ".claude/claude.log"
+  }
+}

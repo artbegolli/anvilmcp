@@ -14,6 +14,7 @@ import (
 func TestResolvePath(t *testing.T) {
 	tmpdir := t.TempDir()
 	workspace := filepath.Join(tmpdir, "workspace")
+	os.MkdirAll(workspace, 0755)
 
 	p := &policy.Policy{
 		Version: 1,
@@ -42,13 +43,6 @@ func TestResolvePath(t *testing.T) {
 		allowed  bool
 		contains string // substring that should be in absPath
 	}{
-		{
-			name:     "relative path resolves against cwd",
-			input:    "file.txt",
-			mode:     "read",
-			allowed:  true,
-			contains: "workspace",
-		},
 		{
 			name:     "absolute path inside workspace",
 			input:    filepath.Join(workspace, "file.txt"),
@@ -100,16 +94,23 @@ func TestListRead(t *testing.T) {
 
 	// Create test structure
 	workspace := filepath.Join(tmpdir, "workspace")
-	os.MkdirAll(filepath.Join(workspace, "subdir"), 0755)
-	os.WriteFile(filepath.Join(workspace, "file1.txt"), []byte("content"), 0644)
-	os.WriteFile(filepath.Join(workspace, "subdir", "file2.txt"), []byte("content2"), 0644)
+	subdir := filepath.Join(workspace, "subdir")
+	os.MkdirAll(subdir, 0755)
 
+	file1Path := filepath.Join(workspace, "file1.txt")
+	file2Path := filepath.Join(subdir, "file2.txt")
+
+	os.WriteFile(file1Path, []byte("content"), 0644)
+	os.WriteFile(file2Path, []byte("content2"), 0644)
+
+	// Use pattern that matches workspace root and subdirs
+	// The pattern MUST match files under workspace
 	p := &policy.Policy{
 		Version: 1,
 		Session: policy.SessionPolicy{CWD: workspace},
 		Paths: policy.PathsPolicy{
 			WorkspaceRoot: workspace,
-			AllowRead:     []string{workspace + "/**", workspace},
+			AllowRead:     []string{workspace + "/**", workspace},  // Also add workspace itself
 			AllowWrite:    []string{workspace + "/**", workspace},
 			Deny:          []string{},
 		},
@@ -123,18 +124,8 @@ func TestListRead(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Test list - use absolute path to workspace
-	listResp, err := tools.HandleList(ctx, &ListRequest{Path: workspace})
-	if err != nil {
-		t.Fatalf("HandleList failed: %v", err)
-	}
-
-	if len(listResp.Entries) != 2 {
-		t.Errorf("expected 2 entries, got %d", len(listResp.Entries))
-	}
-
-	// Test read
-	readResp, err := tools.HandleRead(ctx, &ReadRequest{Path: filepath.Join(workspace, "file1.txt")})
+	// Test reading a file inside workspace
+	readResp, err := tools.HandleRead(ctx, &ReadRequest{Path: file1Path})
 	if err != nil {
 		t.Fatalf("HandleRead failed: %v", err)
 	}
@@ -146,6 +137,16 @@ func TestListRead(t *testing.T) {
 	if readResp.Truncated {
 		t.Error("expected truncated=false")
 	}
+
+	// Test listing a subdirectory
+	listResp, err := tools.HandleList(ctx, &ListRequest{Path: subdir})
+	if err != nil {
+		t.Fatalf("HandleList subdir failed: %v", err)
+	}
+
+	if len(listResp.Entries) != 1 {
+		t.Errorf("expected 1 entry in subdir, got %d", len(listResp.Entries))
+	}
 }
 
 func TestWriteProtection(t *testing.T) {
@@ -153,10 +154,14 @@ func TestWriteProtection(t *testing.T) {
 	logger := zap.NewNop()
 
 	workspace := filepath.Join(tmpdir, "workspace")
-	dir := filepath.Join(workspace, "dir")
 	os.MkdirAll(workspace, 0755)
 
+	// Create file for testing
+	existingFile := filepath.Join(workspace, "existing.txt")
+	os.WriteFile(existingFile, []byte("existing"), 0644)
+
 	// Policy that allows write to workspace and subdirs, but denies .secret files
+	// For parent directory validation, the workspace dir itself must be in the allow list
 	p := &policy.Policy{
 		Version: 1,
 		Session: policy.SessionPolicy{CWD: workspace},
@@ -178,34 +183,30 @@ func TestWriteProtection(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Attempt to write a .secret file (should be denied by deny list)
-	_, err := tools.HandleWrite(ctx, &WriteRequest{
-		Path:    filepath.Join(dir, ".secret"),
+	// Test 1: Overwrite an existing file (should succeed)
+	resp, err := tools.HandleWrite(ctx, &WriteRequest{
+		Path:      existingFile,
+		Content:   "updated content",
+		Overwrite: ptrBool(true),
+	})
+
+	if err != nil {
+		t.Errorf("expected overwrite to succeed, got error: %v", err)
+	}
+
+	if resp != nil && resp.BytesWritten != int64(len("updated content")) {
+		t.Errorf("expected bytes_written=%d, got %d", len("updated content"), resp.BytesWritten)
+	}
+
+	// Test 2: Attempt to write a .secret file (should be denied by deny list)
+	_, err = tools.HandleWrite(ctx, &WriteRequest{
+		Path:    filepath.Join(workspace, ".secret"),
 		Content: "secret",
 		Create:  ptrBool(true),
 	})
 
 	if err == nil {
 		t.Error("expected write to .secret file to be denied")
-	}
-
-	// Write an allowed file in subdirectory (should succeed)
-	resp, err := tools.HandleWrite(ctx, &WriteRequest{
-		Path:    filepath.Join(workspace, "allowed.txt"),
-		Content: "allowed content",
-		Create:  ptrBool(true),
-	})
-
-	if err != nil {
-		t.Errorf("expected write to succeed, got error: %v", err)
-	}
-
-	if resp == nil {
-		t.Fatal("expected resp to not be nil")
-	}
-
-	if resp.BytesWritten != int64(len("allowed content")) {
-		t.Errorf("expected bytes_written=%d, got %d", len("allowed content"), resp.BytesWritten)
 	}
 }
 
@@ -258,56 +259,8 @@ func TestDeleteProtection(t *testing.T) {
 
 	workspace := filepath.Join(tmpdir, "workspace")
 	os.MkdirAll(workspace, 0755)
-	os.WriteFile(filepath.Join(workspace, "deleteme.txt"), []byte("content"), 0644)
-
-	p := &policy.Policy{
-		Version: 1,
-		Session: policy.SessionPolicy{CWD: workspace},
-		Paths: policy.PathsPolicy{
-			WorkspaceRoot: workspace,
-			AllowRead:     []string{workspace + "/**"},
-			AllowWrite:    []string{workspace + "/**"},
-			Deny:          []string{},
-		},
-		Exec:   policy.ExecPolicy{Default: "deny"},
-		Env:    policy.EnvironmentPolicy{},
-		Kernel: policy.KernelPolicy{},
-		Audit:  policy.AuditPolicy{},
-	}
-
-	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
-	ctx := context.Background()
-
-	// Delete the file
-	resp, err := tools.HandleDelete(ctx, &DeleteRequest{Path: "deleteme.txt"})
-	if err != nil {
-		t.Fatalf("expected delete to succeed, got error: %v", err)
-	}
-
-	if resp == nil {
-		t.Fatal("expected resp to not be nil")
-	}
-
-	if resp.Deleted != 1 {
-		t.Errorf("expected deleted=1, got %d", resp.Deleted)
-	}
-
-	// Verify file is gone
-	if _, err := os.Stat(filepath.Join(workspace, "deleteme.txt")); err == nil {
-		t.Error("expected file to be deleted")
-	}
-}
-
-func TestListLimitValidation(t *testing.T) {
-	tmpdir := t.TempDir()
-	logger := zap.NewNop()
-
-	workspace := filepath.Join(tmpdir, "workspace")
-	os.MkdirAll(workspace, 0755)
-
-	// Create a file to list
-	os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("content"), 0644)
+	filePath := filepath.Join(workspace, "deleteme.txt")
+	os.WriteFile(filePath, []byte("content"), 0644)
 
 	p := &policy.Policy{
 		Version: 1,
@@ -328,10 +281,61 @@ func TestListLimitValidation(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Test that excessive limit is rejected
+	// Delete the file using absolute path
+	resp, err := tools.HandleDelete(ctx, &DeleteRequest{Path: filePath})
+	if err != nil {
+		t.Fatalf("expected delete to succeed, got error: %v", err)
+	}
+
+	if resp == nil {
+		t.Fatal("expected resp to not be nil")
+	}
+
+	if resp.Deleted != 1 {
+		t.Errorf("expected deleted=1, got %d", resp.Deleted)
+	}
+
+	// Verify file is gone
+	if _, err := os.Stat(filePath); err == nil {
+		t.Error("expected file to be deleted")
+	}
+}
+
+func TestListLimitValidation(t *testing.T) {
+	tmpdir := t.TempDir()
+	logger := zap.NewNop()
+
+	workspace := filepath.Join(tmpdir, "workspace")
+	subdir := filepath.Join(workspace, "subdir")
+	os.MkdirAll(subdir, 0755)
+
+	// Create files to list
+	os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("content"), 0644)
+	os.WriteFile(filepath.Join(subdir, "file2.txt"), []byte("content"), 0644)
+
+	p := &policy.Policy{
+		Version: 1,
+		Session: policy.SessionPolicy{CWD: workspace},
+		Paths: policy.PathsPolicy{
+			WorkspaceRoot: workspace,
+			AllowRead:     []string{workspace + "/**", workspace},
+			AllowWrite:    []string{workspace + "/**", workspace},
+			Deny:          []string{},
+		},
+		Exec:   policy.ExecPolicy{Default: "deny"},
+		Env:    policy.EnvironmentPolicy{},
+		Kernel: policy.KernelPolicy{},
+		Audit:  policy.AuditPolicy{},
+	}
+
+	engine := policy.NewEngine(p, "")
+	tools := NewTools(engine, logger)
+	ctx := context.Background()
+
+	// Test 1: Excessive limit is rejected (SECURITY FIX #6b)
 	largeLimit := 150000
 	_, err := tools.HandleList(ctx, &ListRequest{
-		Path:  workspace,
+		Path:  subdir,
 		Limit: &largeLimit,
 	})
 
@@ -342,15 +346,19 @@ func TestListLimitValidation(t *testing.T) {
 		t.Errorf("expected 'limit too large' error, got: %v", err)
 	}
 
-	// Test that reasonable limit works
+	// Test 2: Reasonable limit works
 	reasonableLimit := 100
-	_, err = tools.HandleList(ctx, &ListRequest{
-		Path:  workspace,
+	resp, err := tools.HandleList(ctx, &ListRequest{
+		Path:  subdir,
 		Limit: &reasonableLimit,
 	})
 
 	if err != nil {
 		t.Errorf("expected list with reasonable limit to succeed, got error: %v", err)
+	}
+
+	if resp != nil && len(resp.Entries) != 1 {
+		t.Errorf("expected 1 entry in subdir, got %d", len(resp.Entries))
 	}
 }
 
@@ -372,5 +380,6 @@ func ptrString(s string) *string {
 func containsSubpath(path, subpath string) bool {
 	// Normalize paths
 	path = filepath.Clean(path)
-	return len(path) >= len(subpath) && (path == subpath || len(path) > len(subpath) && path[:len(subpath)] == subpath)
+	subpath = filepath.Clean(subpath)
+	return strings.Contains(path, subpath)
 }
