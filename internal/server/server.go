@@ -12,6 +12,7 @@ import (
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"github.com/artbegolli/anvilmcp/internal/tools/exec"
 	"github.com/artbegolli/anvilmcp/internal/tools/filesystem"
+	policytools "github.com/artbegolli/anvilmcp/internal/tools/policy"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
@@ -60,12 +61,16 @@ func NewServer(
 	// Instantiate tool handlers
 	fsTools := filesystem.NewTools(policyEngine, logger)
 	execTools := exec.NewTools(policyEngine, logger, sessConfig, 4)
+	policyToolsHandler := policytools.NewTools(policyEngine, logger)
 
 	// Register filesystem tools
 	registerFilesystemTools(mcpServer, fsTools)
 
 	// Register exec tools
 	registerExecTools(mcpServer, execTools)
+
+	// Register policy tools
+	registerPolicyTools(mcpServer, policyToolsHandler)
 
 	srv := &Server{
 		logger:        logger,
@@ -186,6 +191,30 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithBoolean("recursive", mcp.Description("If true, delete directories and their contents")),
 		),
 		fsToolDeleteHandler(fsTools),
+	)
+}
+
+// registerPolicyTools registers all policy tools with the MCP server.
+func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytools.Tools) {
+	// policy.show - Show current policy
+	mcpServer.AddTool(
+		mcp.NewTool(
+			"policy.show",
+			mcp.WithDescription("Display the current effective security policy"),
+		),
+		policyToolShowHandler(policyTools),
+	)
+
+	// policy.test - Test policy rules
+	mcpServer.AddTool(
+		mcp.NewTool(
+			"policy.test",
+			mcp.WithDescription("Test whether an action would be allowed under the current policy"),
+			mcp.WithString("action", mcp.Required(), mcp.Description("Action to test: read, write, or exec")),
+			mcp.WithString("path", mcp.Description("File path (required for read/write actions)")),
+			mcp.WithString("cmd", mcp.Description("Command name (required for exec actions)")),
+		),
+		policyToolTestHandler(policyTools),
 	)
 }
 
@@ -465,6 +494,56 @@ func execToolScriptHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 			CWD:            cwdPtr,
 			Env:            envStrMap,
 			TimeoutSeconds: timeoutPtr,
+		})
+		if err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					mcp.NewTextContent(fmt.Sprintf("Error: %v", err)),
+				},
+				IsError: true,
+			}, nil
+		}
+
+		respJSON, _ := json.MarshalIndent(resp, "", "  ")
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				mcp.NewTextContent(string(respJSON)),
+			},
+		}, nil
+	}
+}
+
+func policyToolShowHandler(policyTools *policytools.Tools) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		resp, err := policyTools.HandleShow(ctx, &policytools.ShowRequest{})
+		if err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					mcp.NewTextContent(fmt.Sprintf("Error: %v", err)),
+				},
+				IsError: true,
+			}, nil
+		}
+
+		respJSON, _ := json.MarshalIndent(resp, "", "  ")
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				mcp.NewTextContent(string(respJSON)),
+			},
+		}, nil
+	}
+}
+
+func policyToolTestHandler(policyTools *policytools.Tools) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		action := request.GetString("action", "")
+		path := request.GetString("path", "")
+		cmd := request.GetString("cmd", "")
+
+		resp, err := policyTools.HandleTest(ctx, &policytools.TestRequest{
+			Action: action,
+			Path:   path,
+			Cmd:    cmd,
 		})
 		if err != nil {
 			return &mcp.CallToolResult{
