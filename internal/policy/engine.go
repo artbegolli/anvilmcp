@@ -80,7 +80,7 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 
 	// Check against deny list first (deny always wins)
 	for _, pattern := range e.policy.Paths.Deny {
-		if match, _ := filepath.Match(pattern, absPath); match {
+		if pathMatchesPattern(absPath, pattern) {
 			return ResolvePathDecision{Allowed: false, AbsPath: absPath, Reason: "matched deny pattern", PolicyRule: "paths.deny:" + pattern}
 		}
 	}
@@ -99,7 +99,7 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 	}
 
 	for _, pattern := range allowList {
-		if match, _ := filepath.Match(pattern, absPath); match {
+		if pathMatchesPattern(absPath, pattern) {
 			return ResolvePathDecision{Allowed: true, AbsPath: absPath, PolicyRule: "paths.allow_" + mode}
 		}
 	}
@@ -199,4 +199,51 @@ func (e *Engine) FilterEnv(name, value string) FilterEnvDecision {
 	}
 
 	return FilterEnvDecision{Allowed: true, Value: value}
+}
+
+// pathMatchesPattern checks if a path matches a glob pattern, supporting ** for recursive matching.
+func pathMatchesPattern(path, pattern string) bool {
+	// Handle ** patterns (recursive glob)
+	if strings.Contains(pattern, "**") {
+		parts := strings.Split(pattern, "**")
+		if len(parts) == 2 {
+			prefix := parts[0]
+			suffix := parts[1]
+
+			// Remove trailing/leading separators before cleaning
+			prefix = strings.TrimSuffix(prefix, string(filepath.Separator))
+			suffix = strings.TrimPrefix(suffix, string(filepath.Separator))
+
+			// Only clean non-empty parts
+			if prefix != "" {
+				prefix = filepath.Clean(prefix)
+			}
+			if suffix != "" {
+				suffix = filepath.Clean(suffix)
+			}
+
+			// Check prefix
+			if prefix != "" && prefix != "." {
+				if !strings.HasPrefix(path, prefix) {
+					return false
+				}
+				// If suffix is empty, check that path is under the prefix directory
+				if suffix == "" {
+					return strings.HasPrefix(path, prefix+string(filepath.Separator)) || path == prefix
+				}
+			}
+
+			// If we get here and suffix is empty, prefix matched everything
+			if suffix == "" {
+				return true
+			}
+
+			// Check suffix with separators
+			return strings.HasSuffix(path, suffix) || strings.HasSuffix(path, string(filepath.Separator)+suffix)
+		}
+	}
+
+	// Standard glob matching for patterns without **
+	match, _ := filepath.Match(pattern, path)
+	return match
 }

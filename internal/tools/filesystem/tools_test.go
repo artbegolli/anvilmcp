@@ -275,7 +275,11 @@ func TestDeleteProtection(t *testing.T) {
 	// Delete the file
 	resp, err := tools.HandleDelete(ctx, &DeleteRequest{Path: "deleteme.txt"})
 	if err != nil {
-		t.Errorf("expected delete to succeed, got error: %v", err)
+		t.Fatalf("expected delete to succeed, got error: %v", err)
+	}
+
+	if resp == nil {
+		t.Fatal("expected resp to not be nil")
 	}
 
 	if resp.Deleted != 1 {
