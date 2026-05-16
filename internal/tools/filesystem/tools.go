@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"go.uber.org/zap"
@@ -70,11 +71,19 @@ func (t *Tools) HandleList(ctx context.Context, request *ListRequest) (*ListResp
 	var entries []ListEntry
 	limit := 1000
 	if request.Limit != nil && *request.Limit > 0 {
+		// SECURITY FIX #6b: Validate limit doesn't allow excessive memory usage
+		if *request.Limit > 100000 {
+			return nil, fmt.Errorf("limit too large: maximum 100000 entries allowed, requested %d", *request.Limit)
+		}
 		limit = *request.Limit
 	}
 
 	if request.Recursive != nil && *request.Recursive {
-		entries, err = t.walkDir(ctx, absPath, request.Glob, limit)
+		// SECURITY FIX #6b: Add timeout for recursive walks (prevent DoS)
+		walkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		entries, err = t.walkDir(walkCtx, absPath, request.Glob, limit)
 	} else {
 		entries, err = t.listDir(absPath, request.Glob, limit)
 	}
@@ -395,6 +404,13 @@ func (t *Tools) walkDir(ctx context.Context, path string, glob *string, limit in
 	var results []ListEntry
 
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		// SECURITY FIX #6b: Check if context cancelled (timeout or cancellation)
+		select {
+		case <-ctx.Done():
+			return ctx.Err() // Stop walk immediately on timeout
+		default:
+		}
+
 		if err != nil {
 			return err
 		}
