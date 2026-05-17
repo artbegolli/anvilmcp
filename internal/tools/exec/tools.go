@@ -266,7 +266,9 @@ func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*Scri
 		_ = tmpfile.Close()
 		return nil, fmt.Errorf("failed to write script: %w", err)
 	}
-	_ = tmpfile.Close()
+	if err := tmpfile.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close script: %w", err)
+	}
 
 	// Make executable
 	if err := os.Chmod(tmpfile.Name(), 0700); err != nil {
