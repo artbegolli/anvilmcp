@@ -103,4 +103,4 @@ policy enforcement, audit-log surfacing, richer rate-limit controls.
 
 ## License
 
-TBD.
+Apache License 2.0. See [LICENSE](LICENSE).
