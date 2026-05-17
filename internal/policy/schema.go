@@ -93,7 +93,7 @@ func DefaultPolicy() *Policy {
 				"/run/secrets/**",
 				"/etc/**",
 				"**/.env",
-				"**/anvilmcp-config.yaml",
+				"**/anvilmcp/config.yaml",
 			},
 		},
 		Exec: ExecPolicy{

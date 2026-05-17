@@ -62,7 +62,7 @@ COPY --from=builder --chown=anvilmcp:anvilmcp /app/bin/anvilmcp /home/anvilmcp/a
 RUN mkdir -p /home/anvilmcp/.config/anvilmcp /home/anvilmcp/workspace
 
 # Copy default policy file
-COPY --chown=anvilmcp:anvilmcp .config/anvilmcp/anvilmcp-config.yaml /home/anvilmcp/.config/anvilmcp/anvilmcp-config.yaml
+COPY --chown=anvilmcp:anvilmcp .config/anvilmcp/config.yaml /home/anvilmcp/.config/anvilmcp/config.yaml
 
 # Switch to non-root user
 USER anvilmcp

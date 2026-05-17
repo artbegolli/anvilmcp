@@ -1,6 +1,6 @@
 # AnvilMCP container default policy.
 # Embedded into the integration-test image; override at run time by mounting
-# a different file at /home/anvilmcp/.config/anvilmcp/anvilmcp-config.yaml.
+# a different file at /home/anvilmcp/.config/anvilmcp/config.yaml.
 
 version: 1
 
@@ -24,7 +24,7 @@ paths:
     - /home/**/.ssh/**
     - /home/**/.aws/**
     - /run/secrets/**
-    - "**/anvilmcp-config.yaml"
+    - "**/anvilmcp/config.yaml"
 
 exec:
   default: deny

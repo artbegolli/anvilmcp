@@ -1,6 +1,6 @@
 # AnvilMCP Security Policy Configuration
 # Controls what operations are allowed on this container.
-# Place a user copy at ~/.config/anvilmcp/anvilmcp-config.yaml to override defaults.
+# Place a user copy at ~/.config/anvilmcp/config.yaml to override defaults.
 
 version: 1
 
@@ -30,7 +30,7 @@ paths:
     - /run/secrets/**
     - /etc/**
     - "**/.env"
-    - "**/anvilmcp-config.yaml"
+    - "**/anvilmcp/config.yaml"
 
 # Command execution control
 exec:

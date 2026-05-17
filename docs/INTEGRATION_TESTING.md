@@ -24,7 +24,7 @@ Runs `go test -race ./...`. Should complete in well under a minute.
 
 ```bash
 mkdir -p ~/.config/anvilmcp ~/.local/state/anvilmcp
-cp anvilmcp-config.yaml.example ~/.config/anvilmcp/anvilmcp-config.yaml
+cp config.yaml.example ~/.config/anvilmcp/config.yaml
 go run ./cmd/anvilmcp serve --port :8080
 ```
 
@@ -91,4 +91,4 @@ rm -rf workspace/.anvilmcp-test-*
 - `policy.test` with `action: read, path: /etc/passwd` returns `allowed: false`.
 
 If any of the above fail, regenerate the config from
-`anvilmcp-config.yaml.example` — most failures here are stale policy.
+`config.yaml.example` — most failures here are stale policy.

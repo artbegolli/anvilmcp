@@ -7,7 +7,7 @@ AnvilMCP uses YAML-based policy files to control what operations are allowed on 
 1. **Copy the example policy** to your config directory:
    ```bash
    mkdir -p ~/.config/anvilmcp
-   cp anvilmcp-config.yaml.example ~/.config/anvilmcp/anvilmcp-config.yaml
+   cp config.yaml.example ~/.config/anvilmcp/config.yaml
    ```
 
 2. **Edit the policy** to your needs (see sections below)
@@ -18,8 +18,8 @@ AnvilMCP uses YAML-based policy files to control what operations are allowed on 
 
 AnvilMCP enforces a two-layer policy system:
 
-1. **Cluster Policy** (`/etc/anvilmcp/anvilmcp-config.yaml`): The security ceiling set by your platform administrator. Users cannot broaden this.
-2. **User Policy** (`~/.config/anvilmcp/anvilmcp-config.yaml`): Your personal security settings. Can only narrow (restrict) the cluster policy.
+1. **Cluster Policy** (`/etc/anvilmcp/config.yaml`): The security ceiling set by your platform administrator. Users cannot broaden this.
+2. **User Policy** (`~/.config/anvilmcp/config.yaml`): Your personal security settings. Can only narrow (restrict) the cluster policy.
 
 **Effective Policy** = Intersection of cluster and user policies (most restrictive wins)
 
@@ -218,8 +218,8 @@ env:
 
 ## File Locations
 
-- **User Policy**: `~/.config/anvilmcp/anvilmcp-config.yaml`
-- **Cluster Policy**: `/etc/anvilmcp/anvilmcp-config.yaml`
+- **User Policy**: `~/.config/anvilmcp/config.yaml`
+- **Cluster Policy**: `/etc/anvilmcp/config.yaml`
 - **History Database**: `~/.local/state/anvilmcp/history.db`
 
 Override these with CLI flags:
