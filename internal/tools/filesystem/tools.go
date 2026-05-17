@@ -221,6 +221,9 @@ func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteR
 	// Write file
 	mode := os.FileMode(0644)
 	if request.Mode != nil {
+		if *request.Mode < 0 || *request.Mode > 0o7777 {
+			return nil, fmt.Errorf("invalid file mode: %o (must be 0..07777)", *request.Mode)
+		}
 		mode = os.FileMode(*request.Mode)
 	}
 

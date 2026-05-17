@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,11 @@ type Tools struct {
 
 // NewTools creates a new execution tools handler.
 func NewTools(engine *policy.Engine, logger *zap.Logger, sessConfig *config.SessionConfig, maxConcurrent int) *Tools {
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	} else if maxConcurrent > math.MaxInt32 {
+		maxConcurrent = math.MaxInt32
+	}
 	return &Tools{
 		engine:           engine,
 		logger:           logger,
@@ -344,7 +350,7 @@ func (t *Tools) checkRateLimit() bool {
 	t.execHistory = filtered
 
 	// Check if we've exceeded the rate limit
-	if int32(len(t.execHistory)) >= t.maxExecPerSecond {
+	if len(t.execHistory) >= int(t.maxExecPerSecond) {
 		return false
 	}
 

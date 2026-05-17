@@ -86,7 +86,7 @@ func (l *Loader) loadPolicy(path string) (*Policy, error) {
 		return nil, fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	currentUID, err := strconv.Atoi(currentUser.Uid)
+	currentUID, err := strconv.ParseUint(currentUser.Uid, 10, 32)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse current UID: %w", err)
 	}
