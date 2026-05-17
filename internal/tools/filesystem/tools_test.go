@@ -14,7 +14,9 @@ import (
 func TestResolvePath(t *testing.T) {
 	tmpdir := t.TempDir()
 	workspace := filepath.Join(tmpdir, "workspace")
-	os.MkdirAll(workspace, 0755)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
 
 	p := &policy.Policy{
 		Version: 1,
@@ -95,13 +97,19 @@ func TestListRead(t *testing.T) {
 	// Create test structure
 	workspace := filepath.Join(tmpdir, "workspace")
 	subdir := filepath.Join(workspace, "subdir")
-	os.MkdirAll(subdir, 0755)
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
 
 	file1Path := filepath.Join(workspace, "file1.txt")
 	file2Path := filepath.Join(subdir, "file2.txt")
 
-	os.WriteFile(file1Path, []byte("content"), 0644)
-	os.WriteFile(file2Path, []byte("content2"), 0644)
+	if err := os.WriteFile(file1Path, []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to write file1: %v", err)
+	}
+	if err := os.WriteFile(file2Path, []byte("content2"), 0644); err != nil {
+		t.Fatalf("failed to write file2: %v", err)
+	}
 
 	// Use pattern that matches workspace root and subdirs
 	// The pattern MUST match files under workspace
@@ -154,11 +162,15 @@ func TestWriteProtection(t *testing.T) {
 	logger := zap.NewNop()
 
 	workspace := filepath.Join(tmpdir, "workspace")
-	os.MkdirAll(workspace, 0755)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
 
 	// Create file for testing
 	existingFile := filepath.Join(workspace, "existing.txt")
-	os.WriteFile(existingFile, []byte("existing"), 0644)
+	if err := os.WriteFile(existingFile, []byte("existing"), 0644); err != nil {
+		t.Fatalf("failed to write existing file: %v", err)
+	}
 
 	// Policy that allows write to workspace and subdirs, but denies .secret files
 	// For parent directory validation, the workspace dir itself must be in the allow list
@@ -216,15 +228,23 @@ func TestSymlinkResolution(t *testing.T) {
 
 	workspace := filepath.Join(tmpdir, "workspace")
 	secret := filepath.Join(tmpdir, "secret")
-	os.MkdirAll(workspace, 0755)
-	os.MkdirAll(secret, 0755)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+	if err := os.MkdirAll(secret, 0755); err != nil {
+		t.Fatalf("failed to create secret: %v", err)
+	}
 
 	// Create a file outside the workspace
-	os.WriteFile(filepath.Join(secret, "sensitive.txt"), []byte("sensitive"), 0644)
+	if err := os.WriteFile(filepath.Join(secret, "sensitive.txt"), []byte("sensitive"), 0644); err != nil {
+		t.Fatalf("failed to write sensitive file: %v", err)
+	}
 
 	// Create a symlink inside the workspace pointing outside
 	linkPath := filepath.Join(workspace, "link-to-secret")
-	os.Symlink(filepath.Join(secret, "sensitive.txt"), linkPath)
+	if err := os.Symlink(filepath.Join(secret, "sensitive.txt"), linkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
 
 	p := &policy.Policy{
 		Version: 1,
@@ -258,9 +278,13 @@ func TestDeleteProtection(t *testing.T) {
 	logger := zap.NewNop()
 
 	workspace := filepath.Join(tmpdir, "workspace")
-	os.MkdirAll(workspace, 0755)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
 	filePath := filepath.Join(workspace, "deleteme.txt")
-	os.WriteFile(filePath, []byte("content"), 0644)
+	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
 
 	p := &policy.Policy{
 		Version: 1,
@@ -307,11 +331,17 @@ func TestListLimitValidation(t *testing.T) {
 
 	workspace := filepath.Join(tmpdir, "workspace")
 	subdir := filepath.Join(workspace, "subdir")
-	os.MkdirAll(subdir, 0755)
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
 
 	// Create files to list
-	os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("content"), 0644)
-	os.WriteFile(filepath.Join(subdir, "file2.txt"), []byte("content"), 0644)
+	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to write file.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "file2.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to write file2.txt: %v", err)
+	}
 
 	p := &policy.Policy{
 		Version: 1,
@@ -366,14 +396,6 @@ func TestListLimitValidation(t *testing.T) {
 
 func ptrBool(b bool) *bool {
 	return &b
-}
-
-func ptrInt(i int) *int {
-	return &i
-}
-
-func ptrString(s string) *string {
-	return &s
 }
 
 // containsSubpath checks if path contains subpath as a substring

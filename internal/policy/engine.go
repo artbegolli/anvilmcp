@@ -69,9 +69,7 @@ func (e *Engine) ResolvePath(input string, mode string) ResolvePathDecision {
 	evalPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil && !os.IsNotExist(err) {
 		// EvalSymlinks may fail on non-existent paths; that's OK for writes
-		if mode == "write" {
-			evalPath = absPath
-		} else {
+		if mode != "write" {
 			return ResolvePathDecision{Allowed: false, AbsPath: absPath, Reason: err.Error(), PolicyRule: "symlink_error"}
 		}
 	} else if err == nil {

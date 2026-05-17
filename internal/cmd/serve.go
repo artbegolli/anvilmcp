@@ -52,7 +52,7 @@ type ServeConfig struct {
 
 func runServe(ctx context.Context, cfg *ServeConfig) error {
 	logger := logging.NewLogger()
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	logger.Info("Starting Anvil MCP Server",
 		zap.String("port", cfg.Port),

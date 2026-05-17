@@ -24,9 +24,8 @@ type Tools struct {
 	logger        *zap.Logger
 	sessionConfig *config.SessionConfig
 
-	concurrentMu   sync.Mutex
-	concurrent     int32
-	maxConcurrent  int32
+	concurrent    int32
+	maxConcurrent int32
 
 	// SECURITY FIX #6: Rate limiting
 	rateLimitMu         sync.Mutex
@@ -235,8 +234,8 @@ type ScriptResponse struct {
 // HandleScript handles the exec.script tool.
 func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*ScriptResponse, error) {
 	// Determine script extension based on language
-	ext := ".sh"
-	interpreter := "/bin/sh"
+	var ext string
+	var interpreter string
 	switch strings.ToLower(request.Language) {
 	case "python", "python3":
 		ext = ".py"
