@@ -21,7 +21,6 @@ coverage.html
 
 # Go
 vendor/
-go.sum
 
 # Environment
 .env
