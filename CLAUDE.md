@@ -48,7 +48,7 @@ All PRs must:
 ## Project Context
 
 ### Technology Stack
-- **Language:** Go 1.24
+- **Language:** Go 1.25.5
 - **Container:** Docker (Ubuntu 24.04 LTS)
 - **Python:** 3.12 via micromamba
 - **Testing:** `go test` with race detector
