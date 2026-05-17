@@ -45,8 +45,8 @@ deps:
 	go mod tidy
 	go mod download
 
-docker-build: test
-	docker build -t anvilmcp:latest -t anvilmcp:$(shell git rev-parse --short HEAD) .
+docker-build:
+	docker build -t anvilmcp:latest .
 	@echo "Docker image built successfully: anvilmcp:latest"
 	@echo "Run with: make docker-run"
 

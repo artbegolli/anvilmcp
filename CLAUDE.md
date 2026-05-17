@@ -50,7 +50,7 @@ All PRs must:
 ### Technology Stack
 - **Language:** Go 1.22
 - **Container:** Docker (Ubuntu 24.04 LTS)
-- **Python:** 3.11 via micromamba
+- **Python:** 3.12 via micromamba
 - **Testing:** `go test` with race detector
 
 ### Key Files

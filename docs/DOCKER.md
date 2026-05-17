@@ -7,7 +7,7 @@ This guide covers building and running the AnvilMCP server in a Docker container
 The provided `Dockerfile` creates a production-ready container that includes:
 
 - **Base**: Ubuntu 24.04 LTS
-- **Python**: 3.11 via micromamba
+- **Python**: 3.12 via micromamba
 - **Dependencies**: pandas, numpy, scipy, scikit-learn, matplotlib, jupyter, ipython, requests
 - **Security**: Runs as non-root user (`anvilmcp`, UID 1000)
 - **Health Checks**: Built-in health check endpoint

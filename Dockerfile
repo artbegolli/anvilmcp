@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25.5-alpine AS builder
 
 WORKDIR /app
 
@@ -18,30 +18,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
+    bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install micromamba
 ENV MAMBA_ROOT_PREFIX=/opt/micromamba
-RUN mkdir -p ${MAMBA_ROOT_PREFIX} && \
-    curl -Ls https://micromamba.snakepit.net/api/micromamba/linux-64/latest | tar -xvj -C /usr/local/bin --strip-components=1 && \
-    micromamba create -y -n base -c conda-forge python=3.11 && \
-    micromamba clean --all -y
-
-# Create non-root user
-RUN useradd -m -s /bin/bash -u 1000 anvilmcp && \
-    chown -R anvilmcp:anvilmcp ${MAMBA_ROOT_PREFIX}
-
-# Set up working directory
-WORKDIR /home/anvilmcp
-RUN chown -R anvilmcp:anvilmcp /home/anvilmcp
-
-# Switch to non-root user
-USER anvilmcp
-
-# Install Python packages in micromamba environment
-RUN eval "$(micromamba shell-init -s bash)" && \
-    micromamba activate base && \
-    micromamba install -y -c conda-forge \
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+      MAMBA_ARCH="linux-aarch64"; \
+    else \
+      MAMBA_ARCH="linux-64"; \
+    fi && \
+    curl -Ls https://micromamba.snakepit.net/api/micromamba/${MAMBA_ARCH}/latest | tar -xvj -C /usr/local/bin --strip-components=1 && \
+    micromamba shell init -s bash && \
+    micromamba install -y -c conda-forge python=3.12 \
     pandas \
     numpy \
     scipy \
@@ -52,6 +42,17 @@ RUN eval "$(micromamba shell-init -s bash)" && \
     requests \
     && micromamba clean --all -y
 
+# Create non-root user
+RUN useradd -m -s /bin/bash -u 1000 -o anvilmcp && \
+    chown -R anvilmcp:anvilmcp ${MAMBA_ROOT_PREFIX}
+
+# Set up working directory
+WORKDIR /home/anvilmcp
+RUN chown -R anvilmcp:anvilmcp /home/anvilmcp
+
+# Switch to non-root user
+USER anvilmcp
+
 # Copy the binary from builder
 COPY --from=builder --chown=anvilmcp:anvilmcp /app/bin/anvilmcp /home/anvilmcp/anvilmcp
 
@@ -59,7 +60,7 @@ COPY --from=builder --chown=anvilmcp:anvilmcp /app/bin/anvilmcp /home/anvilmcp/a
 RUN mkdir -p /home/anvilmcp/.config/mcp-session /home/anvilmcp/workspace
 
 # Set environment
-ENV PATH="/opt/micromamba/envs/base/bin:$PATH"
+ENV PATH="/opt/micromamba/bin:$PATH"
 ENV ANVILMCP_WORKSPACE_ROOT=/home/anvilmcp/workspace
 
 # Expose port for MCP server (default SSE port)

@@ -154,16 +154,6 @@
       "*.p12"
     ]
   },
-  "hooks": {
-    "beforeGitPush": {
-      "enabled": true,
-      "commands": ["git log -1 --pretty=format:%s"]
-    },
-    "afterGitCommit": {
-      "enabled": true,
-      "commands": ["git log -1"]
-    }
-  },
   "safety": {
     "confirmDestructiveOps": true,
     "confirmFileDeletes": true,
