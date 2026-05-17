@@ -68,7 +68,7 @@ func (l *Loader) Effective() *Policy {
 }
 
 func (l *Loader) loadPolicy(path string) (*Policy, error) {
-	// SECURITY FIX #3: Validate file ownership and permissions BEFORE reading
+	// Validate file ownership and permissions BEFORE reading
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -96,8 +96,10 @@ func (l *Loader) loadPolicy(path string) (*Policy, error) {
 		return nil, fmt.Errorf("policy file must be owned by current user or root, got UID %d", stat.Uid)
 	}
 
-	// Read and parse policy
-	data, err := os.ReadFile(path)
+	// Path is operator-supplied via --policy/--cluster-policy and the lines above
+	// already verified ownership (root or current user) and that the file is not
+	// world/group writable, so file inclusion via a hostile path is mitigated.
+	data, err := os.ReadFile(path) // #nosec G304 -- validated above
 	if err != nil {
 		return nil, err
 	}

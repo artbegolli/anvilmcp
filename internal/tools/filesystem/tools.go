@@ -71,7 +71,6 @@ func (t *Tools) HandleList(ctx context.Context, request *ListRequest) (*ListResp
 	var entries []ListEntry
 	limit := 1000
 	if request.Limit != nil && *request.Limit > 0 {
-		// SECURITY FIX #6b: Validate limit doesn't allow excessive memory usage
 		if *request.Limit > 100000 {
 			return nil, fmt.Errorf("limit too large: maximum 100000 entries allowed, requested %d", *request.Limit)
 		}
@@ -79,7 +78,6 @@ func (t *Tools) HandleList(ctx context.Context, request *ListRequest) (*ListResp
 	}
 
 	if request.Recursive != nil && *request.Recursive {
-		// SECURITY FIX #6b: Add timeout for recursive walks (prevent DoS)
 		walkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
@@ -131,8 +129,9 @@ func (t *Tools) HandleRead(ctx context.Context, request *ReadRequest) (*ReadResp
 		return nil, fmt.Errorf("%s is not a regular file", absPath)
 	}
 
-	// Open and read
-	file, err := os.Open(absPath)
+	// absPath came out of engine.ResolvePath above, which resolved symlinks
+	// and matched it against the policy's allow/deny lists.
+	file, err := os.Open(absPath) // #nosec G304 -- policy-gated
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", absPath, err)
 	}
@@ -207,15 +206,14 @@ func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteR
 			return nil, fmt.Errorf("file does not exist and create is false")
 		}
 
-		// SECURITY FIX #1: Validate parent directory path against policy before creation
+		// Validate parent directory against policy before creating it
 		dir := filepath.Dir(absPath)
 		dirDecision := t.engine.ResolvePath(dir, "write")
 		if !dirDecision.Allowed {
 			return nil, fmt.Errorf("parent directory access denied: operation not permitted (rule: %s)", dirDecision.PolicyRule)
 		}
 
-		// Create directory with validated path
-		if err := os.MkdirAll(dirDecision.AbsPath, 0755); err != nil {
+		if err := os.MkdirAll(dirDecision.AbsPath, 0750); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 	}
@@ -226,7 +224,7 @@ func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteR
 		mode = os.FileMode(*request.Mode)
 	}
 
-	if err := os.WriteFile(absPath, []byte(request.Content), mode); err != nil {
+	if err := os.WriteFile(absPath, []byte(request.Content), mode); err != nil { // #nosec G304 G306 -- policy-gated; caller-controlled mode
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -404,10 +402,9 @@ func (t *Tools) walkDir(ctx context.Context, path string, glob *string, limit in
 	var results []ListEntry
 
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
-		// SECURITY FIX #6b: Check if context cancelled (timeout or cancellation)
 		select {
 		case <-ctx.Done():
-			return ctx.Err() // Stop walk immediately on timeout
+			return ctx.Err()
 		default:
 		}
 

@@ -28,28 +28,25 @@ type ShowRequest struct{}
 
 // ShowResponse is the response from policy.show.
 type ShowResponse struct {
-	Version int         `json:"version"`
-	Session interface{} `json:"session"`
-	Paths   interface{} `json:"paths"`
-	Exec    interface{} `json:"exec"`
-	Env     interface{} `json:"env"`
-	Kernel  interface{} `json:"kernel"`
-	Audit   interface{} `json:"audit"`
+	Version int            `json:"version"`
+	Session *policy.SessionPolicy     `json:"session"`
+	Paths   *policy.PathsPolicy       `json:"paths"`
+	Exec    *policy.ExecPolicy        `json:"exec"`
+	Env     *policy.EnvironmentPolicy `json:"env"`
+	Audit   *policy.AuditPolicy       `json:"audit"`
 }
 
-// HandleShow handles the policy.show tool.
+// HandleShow returns the effective policy. Kernel policy is intentionally
+// omitted from the response until Phase 2 ships kernel execution.
 func (t *Tools) HandleShow(ctx context.Context, request *ShowRequest) (*ShowResponse, error) {
-	// Return the effective policy in a user-friendly format
-	// Note: we can't directly serialize *policy.Policy, so we return it as interface{}
-	// The server will handle JSON marshaling
+	p := t.engine.Policy()
 	return &ShowResponse{
-		Version: 1,
-		Session: "CWD configured",
-		Paths:   "Path allow/deny rules configured",
-		Exec:    "Command execution rules configured",
-		Env:     "Environment variable rules configured",
-		Kernel:  "Python kernel rules configured",
-		Audit:   "Audit configuration set",
+		Version: p.Version,
+		Session: &p.Session,
+		Paths:   &p.Paths,
+		Exec:    &p.Exec,
+		Env:     &p.Env,
+		Audit:   &p.Audit,
 	}, nil
 }
 

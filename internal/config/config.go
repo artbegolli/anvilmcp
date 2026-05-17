@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -19,7 +20,7 @@ type SessionConfig struct {
 func NewSessionConfig() (*SessionConfig, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		homeDir = "/root"
+		return nil, fmt.Errorf("cannot determine user home directory: %w", err)
 	}
 
 	cfg := &SessionConfig{

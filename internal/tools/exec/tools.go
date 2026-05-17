@@ -27,7 +27,6 @@ type Tools struct {
 	concurrent    int32
 	maxConcurrent int32
 
-	// SECURITY FIX #6: Rate limiting
 	rateLimitMu         sync.Mutex
 	execHistory         []time.Time
 	maxExecPerSecond    int32
@@ -105,47 +104,44 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		cwd = pathDecision.AbsPath
 	}
 
-	// Build command
-	cmd := exec.CommandContext(ctx, request.Cmd, request.Argv...)
+	// Build command. Cmd and Argv are user-supplied but EvaluateExec above has
+	// already gated them against the policy's allow/deny/ask lists; running them
+	// is the whole point of this tool.
+	cmd := exec.CommandContext(ctx, request.Cmd, request.Argv...) // #nosec G204 -- policy-gated
 	cmd.Dir = cwd
 
-	// Set environment (filtered through policy)
-	// SECURITY FIX #5: Start with inherited environment, filtered
+	// Build the child env from the parent process env, filtered through policy
+	// (so denylisted/redacted vars like AWS_SECRET_ACCESS_KEY never reach the
+	// subprocess), then overlay any request-supplied env on top — also filtered.
+	// Request-supplied vars override inherited values of the same name; vars
+	// rejected by policy are dropped silently rather than failing the call.
 	var cmdEnv []string
-	inherited := os.Environ()
-
-	// Filter inherited environment variables through policy
-	for _, envStr := range inherited {
+	for _, envStr := range os.Environ() {
 		parts := strings.SplitN(envStr, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
 		k, v := parts[0], parts[1]
-
-		envDecision := t.engine.FilterEnv(k, v)
-		if envDecision.Allowed {
+		if envDecision := t.engine.FilterEnv(k, v); envDecision.Allowed {
 			cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
 		}
 	}
 
-	// Merge with request-provided environment variables
-	if len(request.Env) > 0 {
-		for k, v := range request.Env {
-			envDecision := t.engine.FilterEnv(k, v)
-			if envDecision.Allowed {
-				// Check if already set from inherited vars
-				found := false
-				for i, envStr := range cmdEnv {
-					if strings.HasPrefix(envStr, k+"=") {
-						cmdEnv[i] = k + "=" + envDecision.Value
-						found = true
-						break
-					}
-				}
-				if !found {
-					cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
-				}
+	for k, v := range request.Env {
+		envDecision := t.engine.FilterEnv(k, v)
+		if !envDecision.Allowed {
+			continue
+		}
+		replaced := false
+		for i, envStr := range cmdEnv {
+			if strings.HasPrefix(envStr, k+"=") {
+				cmdEnv[i] = k + "=" + envDecision.Value
+				replaced = true
+				break
 			}
+		}
+		if !replaced {
+			cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
 		}
 	}
 
@@ -270,12 +266,13 @@ func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*Scri
 		return nil, fmt.Errorf("failed to close script: %w", err)
 	}
 
-	// Make executable
-	if err := os.Chmod(tmpfile.Name(), 0700); err != nil {
+	// Script must be executable so the interpreter can run it; gosec flags 0700
+	// for being above 0600 but executable temp scripts are the point here.
+	if err := os.Chmod(tmpfile.Name(), 0700); err != nil { // #nosec G302 -- temp script needs exec bit
 		return nil, fmt.Errorf("failed to chmod script: %w", err)
 	}
 
-	// SECURITY FIX #2: Validate script arguments against exec policy
+	// Validate script arguments against exec policy
 	for _, arg := range request.Args {
 		// Check if argument would be denied by policy for the interpreter
 		testDecision := t.engine.EvaluateExec(interpreter, []string{arg})

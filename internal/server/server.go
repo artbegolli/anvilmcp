@@ -36,7 +36,10 @@ func NewServer(
 	sessConfig *config.SessionConfig,
 	userPolicyPath, clusterPolicyPath, historyDBPath string,
 ) (*Server, error) {
-	// Load policies
+	logger.Info("Loading policies",
+		zap.String("user_policy", userPolicyPath),
+		zap.String("cluster_policy", clusterPolicyPath),
+	)
 	policyLoader, err := policy.NewLoader(userPolicyPath, clusterPolicyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load policies: %w", err)
@@ -44,14 +47,20 @@ func NewServer(
 
 	effectivePolicy := policyLoader.Effective()
 	policyEngine := policy.NewEngine(effectivePolicy, policyLoader.PolicyFilePath())
+	logger.Info("Policies loaded",
+		zap.String("effective_policy_path", policyLoader.PolicyFilePath()),
+		zap.Int("allow_read_rules", len(effectivePolicy.Paths.AllowRead)),
+		zap.Int("allow_write_rules", len(effectivePolicy.Paths.AllowWrite)),
+		zap.Int("exec_allow_rules", len(effectivePolicy.Exec.Allow)),
+		zap.String("exec_default", effectivePolicy.Exec.Default),
+	)
 
-	// Initialize history store
+	logger.Info("Initializing history store", zap.String("db_path", historyDBPath))
 	histStore, err := history.NewStore(ctx, historyDBPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize history store: %w", err)
 	}
 
-	// Create MCP server
 	mcpServer := mcpserver.NewMCPServer(
 		"anvilmcp",
 		"0.1.0",
@@ -59,24 +68,14 @@ func NewServer(
 		mcpserver.WithToolCapabilities(true),
 	)
 
-	// Instantiate tool handlers
 	fsTools := filesystem.NewTools(policyEngine, logger)
 	execTools := exec.NewTools(policyEngine, logger, sessConfig, 4)
 	policyToolsHandler := policytools.NewTools(policyEngine, logger)
 
-	// Register filesystem tools
-	registerFilesystemTools(mcpServer, fsTools)
-
-	// Register exec tools
-	registerExecTools(mcpServer, execTools)
-
-	// Register policy tools
-	registerPolicyTools(mcpServer, policyToolsHandler)
-
-	// Register resources. Resources expose the same data as a subset of the
-	// tools so host apps can browse/pin without the model mediating; the tool
-	// forms stay for clients that don't speak resources and for paged file reads.
-	registerResources(mcpServer, fsTools, policyToolsHandler)
+	registerFilesystemTools(mcpServer, fsTools, logger)
+	registerExecTools(mcpServer, execTools, logger)
+	registerPolicyTools(mcpServer, policyToolsHandler, logger)
+	registerResources(mcpServer, fsTools, policyToolsHandler, logger)
 
 	srv := &Server{
 		logger:        logger,
@@ -87,12 +86,13 @@ func NewServer(
 		mcpServer:     mcpServer,
 	}
 
-	// Create HTTP server
 	srv.httpServer = mcpserver.NewStreamableHTTPServer(mcpServer)
 
 	logger.Info("Server initialized",
 		zap.String("session_id", sessConfig.SessionID),
 		zap.String("workspace_root", sessConfig.WorkspaceRoot),
+		zap.String("user_id", sessConfig.UserID),
+		zap.String("home_dir", sessConfig.HomeDir),
 	)
 
 	return srv, nil
@@ -139,9 +139,37 @@ func (s *Server) SessionConfig() *config.SessionConfig {
 	return s.sessionConfig
 }
 
-// registerFilesystemTools registers all filesystem tools with the MCP server.
-func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools) {
-	// fs.list - List directory contents
+// loggedTool wraps a tool handler to log invocations and result-level errors.
+func loggedTool(logger *zap.Logger, name string, h mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		logger.Info("tool invoked", zap.String("tool", name))
+		result, err := h(ctx, request)
+		if err != nil {
+			logger.Error("tool failed", zap.String("tool", name), zap.Error(err))
+		} else if result != nil && result.IsError {
+			logger.Warn("tool returned error", zap.String("tool", name))
+		}
+		return result, err
+	}
+}
+
+// loggedResource wraps a resource handler to log reads.
+func loggedResource(logger *zap.Logger, uri string, h mcpserver.ResourceHandlerFunc) mcpserver.ResourceHandlerFunc {
+	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		logger.Info("resource read", zap.String("uri", uri))
+		return h(ctx, request)
+	}
+}
+
+// loggedResourceTemplate wraps a templated resource handler to log reads.
+func loggedResourceTemplate(logger *zap.Logger, template string, h mcpserver.ResourceTemplateHandlerFunc) mcpserver.ResourceTemplateHandlerFunc {
+	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		logger.Info("resource read", zap.String("template", template), zap.String("uri", request.Params.URI))
+		return h(ctx, request)
+	}
+}
+
+func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, logger *zap.Logger) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.list",
@@ -150,10 +178,9 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithString("pattern", mcp.Description("Optional glob pattern to filter results")),
 			mcp.WithBoolean("recursive", mcp.Description("Whether to list recursively")),
 		),
-		fsToolListHandler(fsTools),
+		loggedTool(logger, "fs.list", fsToolListHandler(fsTools)),
 	)
 
-	// fs.read - Read file contents
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.read",
@@ -162,10 +189,9 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithInteger("offset", mcp.Description("Optional byte offset to start reading from")),
 			mcp.WithInteger("length", mcp.Description("Optional number of bytes to read")),
 		),
-		fsToolReadHandler(fsTools),
+		loggedTool(logger, "fs.read", fsToolReadHandler(fsTools)),
 	)
 
-	// fs.write - Write file contents
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.write",
@@ -175,20 +201,18 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithBoolean("create", mcp.Description("Whether to create if missing")),
 			mcp.WithBoolean("overwrite", mcp.Description("Whether to overwrite if exists")),
 		),
-		fsToolWriteHandler(fsTools),
+		loggedTool(logger, "fs.write", fsToolWriteHandler(fsTools)),
 	)
 
-	// fs.stat - Get file metadata
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.stat",
 			mcp.WithDescription("Get file or directory metadata"),
 			mcp.WithString("path", mcp.Required(), mcp.Description("File or directory path (relative or absolute)")),
 		),
-		fsToolStatHandler(fsTools),
+		loggedTool(logger, "fs.stat", fsToolStatHandler(fsTools)),
 	)
 
-	// fs.delete - Delete file or directory
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.delete",
@@ -196,22 +220,19 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithString("path", mcp.Required(), mcp.Description("Path to delete (relative or absolute)")),
 			mcp.WithBoolean("recursive", mcp.Description("If true, delete directories and their contents")),
 		),
-		fsToolDeleteHandler(fsTools),
+		loggedTool(logger, "fs.delete", fsToolDeleteHandler(fsTools)),
 	)
 }
 
-// registerPolicyTools registers all policy tools with the MCP server.
-func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytools.Tools) {
-	// policy.show - Show current policy
+func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytools.Tools, logger *zap.Logger) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"policy.show",
 			mcp.WithDescription("Display the current effective security policy"),
 		),
-		policyToolShowHandler(policyTools),
+		loggedTool(logger, "policy.show", policyToolShowHandler(policyTools)),
 	)
 
-	// policy.test - Test policy rules
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"policy.test",
@@ -220,13 +241,11 @@ func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytool
 			mcp.WithString("path", mcp.Description("File path (required for read/write actions)")),
 			mcp.WithString("cmd", mcp.Description("Command name (required for exec actions)")),
 		),
-		policyToolTestHandler(policyTools),
+		loggedTool(logger, "policy.test", policyToolTestHandler(policyTools)),
 	)
 }
 
-// registerExecTools registers all execution tools with the MCP server.
-func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools) {
-	// exec.shell - Execute shell command
+func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, logger *zap.Logger) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"exec.shell",
@@ -237,10 +256,9 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools) {
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		execToolShellHandler(execTools),
+		loggedTool(logger, "exec.shell", execToolShellHandler(execTools)),
 	)
 
-	// exec.script - Execute a script
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"exec.script",
@@ -252,12 +270,19 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools) {
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		execToolScriptHandler(execTools),
+		loggedTool(logger, "exec.script", execToolScriptHandler(execTools)),
 	)
 }
 
-// registerResources registers MCP resources mirroring read-only tool surfaces.
-func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, policyTools *policytools.Tools) {
+// registerResources exposes a read-only resource view of policy, file contents,
+// and file metadata. Tools and resources intentionally cover overlapping data:
+// tools are the model-mediated path (LLM calls them with parameters; required
+// for writes, exec, and parameterized reads like offset/length); resources are
+// the host-mediated path that lets a UI browse, pin, or stream content
+// without going through the model. The MCP spec encourages this duality so
+// clients that don't speak resources still work, and clients that do can
+// expose richer UX. See https://modelcontextprotocol.io/specification.
+func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, policyTools *policytools.Tools, logger *zap.Logger) {
 	mcpServer.AddResource(
 		mcp.NewResource(
 			"policy://effective",
@@ -265,7 +290,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			mcp.WithResourceDescription("Current effective policy (cluster ∩ user) governing path, exec, and env decisions"),
 			mcp.WithMIMEType("application/json"),
 		),
-		policyResourceHandler(policyTools),
+		loggedResource(logger, "policy://effective", policyResourceHandler(policyTools)),
 	)
 
 	mcpServer.AddResourceTemplate(
@@ -274,7 +299,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			"Workspace file content",
 			mcp.WithTemplateDescription("Full contents of a file at the given absolute path; use the fs.read tool for paged reads"),
 		),
-		fileResourceHandler(fsTools),
+		loggedResourceTemplate(logger, "file:///{+path}", fileResourceHandler(fsTools)),
 	)
 
 	mcpServer.AddResourceTemplate(
@@ -284,7 +309,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			mcp.WithTemplateDescription("Type, size, mtime, and permissions for a file or directory at the given absolute path"),
 			mcp.WithTemplateMIMEType("application/json"),
 		),
-		statResourceHandler(fsTools),
+		loggedResourceTemplate(logger, "stat:///{+path}", statResourceHandler(fsTools)),
 	)
 }
 

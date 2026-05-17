@@ -33,6 +33,11 @@ func NewEngine(policy *Policy, policyFilePath string) *Engine {
 	return engine
 }
 
+// Policy returns the effective policy this engine is enforcing.
+func (e *Engine) Policy() *Policy {
+	return e.policy
+}
+
 // ResolvePathDecision represents the result of a path resolution.
 type ResolvePathDecision struct {
 	Allowed      bool
@@ -244,7 +249,6 @@ func (e *Engine) FilterEnv(name, value string) FilterEnvDecision {
 }
 
 // pathMatchesPattern checks if a path matches a glob pattern, supporting ** for recursive matching.
-// SECURITY FIX #4: Normalize both path and pattern, reject paths with .. sequences
 func pathMatchesPattern(path, pattern string) bool {
 	// Normalize both path and pattern
 	path = filepath.Clean(path)

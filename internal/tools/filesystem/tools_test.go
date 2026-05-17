@@ -362,7 +362,7 @@ func TestListLimitValidation(t *testing.T) {
 	tools := NewTools(engine, logger)
 	ctx := context.Background()
 
-	// Test 1: Excessive limit is rejected (SECURITY FIX #6b)
+	// Test 1: Excessive limit is rejected
 	largeLimit := 150000
 	_, err := tools.HandleList(ctx, &ListRequest{
 		Path:  subdir,
