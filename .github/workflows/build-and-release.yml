@@ -21,7 +21,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux
+          # AnvilMCP runs inside Linux dev containers and is built/operated
+          # on the developer's macOS workstation. Windows is not a supported
+          # target — the policy file ownership check uses POSIX-only
+          # syscall.Stat_t and won't compile under GOOS=windows.
           - os: linux
             arch: amd64
             goarch: amd64
@@ -34,7 +37,6 @@ jobs:
             arch: arm
             goarch: arm
             file_ext: ''
-          # macOS
           - os: darwin
             arch: amd64
             goarch: amd64
@@ -43,11 +45,6 @@ jobs:
             arch: arm64
             goarch: arm64
             file_ext: ''
-          # Windows
-          - os: windows
-            arch: amd64
-            goarch: amd64
-            file_ext: '.exe'
 
     steps:
       - name: Checkout code
