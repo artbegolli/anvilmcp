@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"go.uber.org/zap"
 
@@ -71,6 +72,11 @@ func NewServer(
 
 	// Register policy tools
 	registerPolicyTools(mcpServer, policyToolsHandler)
+
+	// Register resources. Resources expose the same data as a subset of the
+	// tools so host apps can browse/pin without the model mediating; the tool
+	// forms stay for clients that don't speak resources and for paged file reads.
+	registerResources(mcpServer, fsTools, policyToolsHandler)
 
 	srv := &Server{
 		logger:        logger,
@@ -248,6 +254,115 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools) {
 		),
 		execToolScriptHandler(execTools),
 	)
+}
+
+// registerResources registers MCP resources mirroring read-only tool surfaces.
+func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, policyTools *policytools.Tools) {
+	mcpServer.AddResource(
+		mcp.NewResource(
+			"policy://effective",
+			"Effective security policy",
+			mcp.WithResourceDescription("Current effective policy (cluster ∩ user) governing path, exec, and env decisions"),
+			mcp.WithMIMEType("application/json"),
+		),
+		policyResourceHandler(policyTools),
+	)
+
+	mcpServer.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"file:///{+path}",
+			"Workspace file content",
+			mcp.WithTemplateDescription("Full contents of a file at the given absolute path; use the fs.read tool for paged reads"),
+		),
+		fileResourceHandler(fsTools),
+	)
+
+	mcpServer.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"stat:///{+path}",
+			"File metadata",
+			mcp.WithTemplateDescription("Type, size, mtime, and permissions for a file or directory at the given absolute path"),
+			mcp.WithTemplateMIMEType("application/json"),
+		),
+		statResourceHandler(fsTools),
+	)
+}
+
+func policyResourceHandler(policyTools *policytools.Tools) mcpserver.ResourceHandlerFunc {
+	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		resp, err := policyTools.HandleShow(ctx, &policytools.ShowRequest{})
+		if err != nil {
+			return nil, err
+		}
+		body, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal policy: %w", err)
+		}
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:      request.Params.URI,
+				MIMEType: "application/json",
+				Text:     string(body),
+			},
+		}, nil
+	}
+}
+
+func fileResourceHandler(fsTools *filesystem.Tools) mcpserver.ResourceTemplateHandlerFunc {
+	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		path, err := pathFromResourceURI(request.Params.URI)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := fsTools.HandleRead(ctx, &filesystem.ReadRequest{Path: path})
+		if err != nil {
+			return nil, err
+		}
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:  request.Params.URI,
+				Text: resp.Content,
+			},
+		}, nil
+	}
+}
+
+func statResourceHandler(fsTools *filesystem.Tools) mcpserver.ResourceTemplateHandlerFunc {
+	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		path, err := pathFromResourceURI(request.Params.URI)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := fsTools.HandleStat(ctx, &filesystem.StatRequest{Path: path})
+		if err != nil {
+			return nil, err
+		}
+		body, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal stat: %w", err)
+		}
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:      request.Params.URI,
+				MIMEType: "application/json",
+				Text:     string(body),
+			},
+		}, nil
+	}
+}
+
+// pathFromResourceURI extracts the filesystem path from a resource URI like
+// "file:///etc/hosts" or "stat:///workspace/foo.py". Policy enforcement still
+// runs inside the underlying tool handler via ResolvePath.
+func pathFromResourceURI(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid resource URI %q: %w", raw, err)
+	}
+	if u.Path == "" {
+		return "", fmt.Errorf("resource URI %q has no path component", raw)
+	}
+	return u.Path, nil
 }
 
 // Tool handler adapters - convert mcp.CallToolRequest to our tool-specific request types
