@@ -260,13 +260,13 @@ func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*Scri
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp script: %w", err)
 	}
-	defer os.Remove(tmpfile.Name())
+	defer func() { _ = os.Remove(tmpfile.Name()) }()
 
 	if _, err := tmpfile.WriteString(request.Content); err != nil {
-		tmpfile.Close()
+		_ = tmpfile.Close()
 		return nil, fmt.Errorf("failed to write script: %w", err)
 	}
-	tmpfile.Close()
+	_ = tmpfile.Close()
 
 	// Make executable
 	if err := os.Chmod(tmpfile.Name(), 0700); err != nil {

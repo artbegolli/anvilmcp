@@ -40,7 +40,7 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 
 	// Initialize schema
 	if err := s.initSchema(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -173,7 +173,7 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var records []*Record
 	for rows.Next() {

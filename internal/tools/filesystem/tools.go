@@ -136,7 +136,7 @@ func (t *Tools) HandleRead(ctx context.Context, request *ReadRequest) (*ReadResp
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", absPath, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Apply offset if provided
 	if request.Offset != nil && *request.Offset > 0 {
