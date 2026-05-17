@@ -1,0 +1,110 @@
+# AnvilMCP Security Policy Configuration
+# Controls what operations are allowed on this container.
+# Place a user copy at ~/.config/anvilmcp/config.yaml to override defaults.
+
+version: 1
+
+# Session-level defaults
+session:
+  cwd: /workspace
+
+# Filesystem access control
+paths:
+  workspace_root: /workspace
+
+  # Paths that can be read (supports ** for recursive globs)
+  allow_read:
+    - /workspace/**
+    - /usr/local/lib/python3/**  # Allow reading Python libraries
+
+  # Paths that can be written/created (supports ** for recursive globs)
+  allow_write:
+    - /workspace/**
+
+  # Paths that are always blocked regardless of allow lists
+  deny:
+    - /workspace/.git/**
+    - /home/**/.ssh/**
+    - /home/**/.aws/**
+    - /home/**/.gnupg/**
+    - /run/secrets/**
+    - /etc/**
+    - "**/.env"
+    - "**/anvilmcp/config.yaml"
+
+# Command execution control
+exec:
+  # Default: "allow" or "deny"
+  default: deny
+
+  # Allowed commands with optional argument restrictions
+  allow:
+    python3:
+      subcommands: []
+      args_deny: []
+    pytest:
+      subcommands: []
+      args_deny: []
+    ls:
+      subcommands: []
+      args_deny: []
+    cat:
+      subcommands: []
+      args_deny: []
+    git:
+      subcommands: []
+      args_deny:
+        - push
+        - reset
+        - clean
+        - checkout
+    pip:
+      subcommands: []
+      args_deny:
+        - uninstall
+        - "--break-system-packages"
+
+  # Explicitly denied commands (always blocks)
+  deny:
+    - rm
+    - dd
+    - mkfs*
+    - ssh
+    - scp
+
+  # Commands that require confirmation (optional, Phase 2)
+  ask: {}
+
+  # Execution limits
+  shell_interpolation: false      # Disable shell variable expansion
+  max_runtime_seconds: 300        # 5 minute timeout
+  max_output_bytes: 5000000       # 5 MB output limit
+  max_concurrent: 4               # Max parallel executions
+
+# Environment variable control
+env:
+  # Regex patterns for variable names to redact (not expose to tools)
+  redact_patterns:
+    - '(?i)secret'
+    - '(?i)token'
+    - '(?i)password'
+    - '(?i)api[_-]?key'
+    - '(?i)credential'
+
+  # Explicitly denied variables
+  explicit_deny: []
+
+  # If non-empty, whitelist mode (only these are allowed)
+  allow_only: []
+
+# Audit and history control
+audit:
+  history_db_path: ~/.local/state/anvilmcp/history.db
+  retention_days: 30
+  max_total_bytes: 1073741824  # 1 GB
+
+  # Tools whose outputs are not stored in history
+  no_store_output: []
+
+  # Tools that are not recorded in history
+  no_store_tools: []
