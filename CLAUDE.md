@@ -54,12 +54,12 @@ All PRs must:
 - **Testing:** `go test` with race detector
 
 ### Key Files
-- `Dockerfile` - Production container definition
+- `Dockerfile` - Integration-test container definition (not distributed)
 - `Makefile` - Build, test, and Docker targets
 - `internal/policy/engine.go` - Core security policy engine
 - `internal/tools/` - Filesystem and execution tools
 - `scripts/test-mcp-docker.sh` - Integration test suite
-- `docs/DOCKER.md` - Docker usage guide
+- `docs/INTEGRATION_TESTING.md` - Build, run, and exercise the server
 
 ### Security Model
 
@@ -145,10 +145,9 @@ git remote set-url origin git@github.com:artbegolli/anvilmcp.git
 
 Refer to:
 - `README.md` - Project overview
-- `docs/DOCKER.md` - Docker usage guide
+- `docs/INTEGRATION_TESTING.md` - Build, run, and exercise the server
 - `docs/POLICY_CONFIGURATION.md` - Policy configuration
-- `docs/TESTING.md` - Testing procedures
-- `IMPLEMENTATION_STATUS.md` - Phase status and roadmap
+- Phase status and roadmap are tracked at `~/Documents/workspace/SPECS/SESSION_MCP/IMPLEMENTATION_STATUS.md` (outside this repo)
 
 ---
 

@@ -6,8 +6,8 @@ AnvilMCP uses YAML-based policy files to control what operations are allowed on 
 
 1. **Copy the example policy** to your config directory:
    ```bash
-   mkdir -p ~/.config/mcp-session
-   cp .mcp-policy.yaml.example ~/.config/mcp-session/policy.yaml
+   mkdir -p ~/.config/anvilmcp
+   cp anvilmcp-config.yaml.example ~/.config/anvilmcp/anvilmcp-config.yaml
    ```
 
 2. **Edit the policy** to your needs (see sections below)
@@ -18,8 +18,8 @@ AnvilMCP uses YAML-based policy files to control what operations are allowed on 
 
 AnvilMCP enforces a two-layer policy system:
 
-1. **Cluster Policy** (`/etc/mcp-session/cluster-policy.yaml`): The security ceiling set by your platform administrator. Users cannot broaden this.
-2. **User Policy** (`~/.config/mcp-session/policy.yaml`): Your personal security settings. Can only narrow (restrict) the cluster policy.
+1. **Cluster Policy** (`/etc/anvilmcp/anvilmcp-config.yaml`): The security ceiling set by your platform administrator. Users cannot broaden this.
+2. **User Policy** (`~/.config/anvilmcp/anvilmcp-config.yaml`): Your personal security settings. Can only narrow (restrict) the cluster policy.
 
 **Effective Policy** = Intersection of cluster and user policies (most restrictive wins)
 
@@ -119,29 +119,13 @@ env:
   allow_only: []             # If non-empty, whitelist mode (most restrictive)
 ```
 
-### 5. Python Kernel Control (Phase 2)
-
-Controls Python kernel execution:
-
-```yaml
-kernel:
-  default: allow            # Default: "allow" or "deny"
-
-  deny_imports:             # Blocked Python imports
-    - subprocess
-    - os.system
-    - __import__
-
-  max_runtime_seconds: 600   # 10 minute timeout
-```
-
-### 6. Audit Configuration
+### 5. Audit Configuration
 
 Controls history and logging:
 
 ```yaml
 audit:
-  history_db_path: ~/.local/state/mcp-session/history.db
+  history_db_path: ~/.local/state/anvilmcp/history.db
   retention_days: 30         # Keep history for 30 days
   max_total_bytes: 1073741824 # 1 GB total storage
 
@@ -234,9 +218,9 @@ env:
 
 ## File Locations
 
-- **User Policy**: `~/.config/mcp-session/policy.yaml`
-- **Cluster Policy**: `/etc/mcp-session/cluster-policy.yaml`
-- **History Database**: `~/.local/state/mcp-session/history.db`
+- **User Policy**: `~/.config/anvilmcp/anvilmcp-config.yaml`
+- **Cluster Policy**: `/etc/anvilmcp/anvilmcp-config.yaml`
+- **History Database**: `~/.local/state/anvilmcp/history.db`
 
 Override these with CLI flags:
 ```bash
