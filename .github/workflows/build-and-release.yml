@@ -143,7 +143,9 @@ jobs:
           files: release/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          # Treat any tag with a SemVer pre-release suffix (-alpha, -beta, -rc.N,
+          # etc.) as a prerelease so it doesn't get marked "Latest" on GitHub.
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
