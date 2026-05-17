@@ -157,6 +157,9 @@ jobs:
       contents: read
       packages: write
 
+    env:
+      HAS_DOCKER_CREDS: ${{ secrets.DOCKER_USERNAME != '' }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -188,14 +191,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-        if: secrets.DOCKER_USERNAME != ''
+        if: env.HAS_DOCKER_CREDS == 'true'
 
       - name: Push to Docker Hub
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ secrets.DOCKER_USERNAME != '' }}
+          push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/anvilmcp:${{ steps.version.outputs.version }}
             ${{ secrets.DOCKER_USERNAME }}/anvilmcp:latest
-        if: secrets.DOCKER_USERNAME != ''
+        if: env.HAS_DOCKER_CREDS == 'true'
