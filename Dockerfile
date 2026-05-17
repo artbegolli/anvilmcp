@@ -1,3 +1,8 @@
+# This Dockerfile exists for local/CI integration testing only. AnvilMCP is
+# not distributed as a container image — production deployments run the
+# binary directly inside the dev container provided by the host platform.
+# See docs/INTEGRATION_TESTING.md.
+
 # Build stage
 FROM golang:1.25.5-alpine AS builder
 
@@ -54,10 +59,10 @@ RUN chown -R anvilmcp:anvilmcp /home/anvilmcp
 COPY --from=builder --chown=anvilmcp:anvilmcp /app/bin/anvilmcp /home/anvilmcp/anvilmcp
 
 # Create directories for workspace and config
-RUN mkdir -p /home/anvilmcp/.config/mcp-session /home/anvilmcp/workspace
+RUN mkdir -p /home/anvilmcp/.config/anvilmcp /home/anvilmcp/workspace
 
 # Copy default policy file
-COPY --chown=anvilmcp:anvilmcp .config/mcp-session/policy.yaml /home/anvilmcp/.config/mcp-session/policy.yaml
+COPY --chown=anvilmcp:anvilmcp .config/anvilmcp/anvilmcp-config.yaml /home/anvilmcp/.config/anvilmcp/anvilmcp-config.yaml
 
 # Switch to non-root user
 USER anvilmcp

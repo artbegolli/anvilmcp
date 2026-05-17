@@ -36,9 +36,9 @@ func NewServeCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&port, "port", "p", ":8080", "Port to listen on")
-	cmd.Flags().StringVar(&policyPath, "policy", os.ExpandEnv("$HOME/.config/mcp-session/policy.yaml"), "Path to user policy file")
-	cmd.Flags().StringVar(&clusterPolicyPath, "cluster-policy", "/etc/mcp-session/cluster-policy.yaml", "Path to cluster policy file")
-	cmd.Flags().StringVar(&historyDBPath, "history-db", os.ExpandEnv("$HOME/.local/state/mcp-session/history.db"), "Path to history database")
+	cmd.Flags().StringVar(&policyPath, "policy", os.ExpandEnv("$HOME/.config/anvilmcp/anvilmcp-config.yaml"), "Path to user policy file")
+	cmd.Flags().StringVar(&clusterPolicyPath, "cluster-policy", "/etc/anvilmcp/anvilmcp-config.yaml", "Path to cluster policy file")
+	cmd.Flags().StringVar(&historyDBPath, "history-db", os.ExpandEnv("$HOME/.local/state/anvilmcp/history.db"), "Path to history database")
 
 	return cmd
 }

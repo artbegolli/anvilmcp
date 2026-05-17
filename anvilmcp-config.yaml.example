@@ -1,6 +1,6 @@
 # AnvilMCP Security Policy Configuration
-# This file controls what operations are allowed on this container
-# Place a user copy at ~/.mcp-policy.yaml to override defaults
+# Controls what operations are allowed on this container.
+# Place a user copy at ~/.config/anvilmcp/anvilmcp-config.yaml to override defaults.
 
 version: 1
 
@@ -29,8 +29,8 @@ paths:
     - /home/**/.gnupg/**
     - /run/secrets/**
     - /etc/**
-    - **/.env
-    - **/.mcp-policy.yaml
+    - "**/.env"
+    - "**/anvilmcp-config.yaml"
 
 # Command execution control
 exec:
@@ -97,19 +97,9 @@ env:
   # If non-empty, whitelist mode (only these are allowed)
   allow_only: []
 
-# Python kernel control (Phase 2)
-kernel:
-  default: allow
-
-  # Blocked imports for the kernel
-  deny_imports: []
-
-  # Maximum runtime for kernel cells
-  max_runtime_seconds: 600
-
 # Audit and history control
 audit:
-  history_db_path: ~/.local/state/mcp-session/history.db
+  history_db_path: ~/.local/state/anvilmcp/history.db
   retention_days: 30
   max_total_bytes: 1073741824  # 1 GB
 

@@ -1,21 +1,72 @@
-# AnvilMCP Policy Configuration
-# This policy allows all operations on the workspace for testing
+# AnvilMCP container default policy.
+# Embedded into the integration-test image; override at run time by mounting
+# a different file at /home/anvilmcp/.config/anvilmcp/anvilmcp-config.yaml.
 
-tools:
-  filesystem:
-    allow:
-      - path: /home/**
-      - path: /tmp/**
-    deny:
-      - path: /etc/**
-      - path: /root/**
-      - path: /.ssh/**
+version: 1
 
-  execution:
-    allow:
-      - cmd: ".*"
-    deny:
-      - cmd: "rm"
-      - cmd: "dd"
-      - cmd: "mkfs"
-      - cmd: "fdisk"
+session:
+  cwd: /home/anvilmcp/workspace
+
+paths:
+  workspace_root: /home/anvilmcp/workspace
+
+  allow_read:
+    - /home/anvilmcp/workspace/**
+    - /tmp/**
+
+  allow_write:
+    - /home/anvilmcp/workspace/**
+    - /tmp/**
+
+  deny:
+    - /etc/**
+    - /root/**
+    - /home/**/.ssh/**
+    - /home/**/.aws/**
+    - /run/secrets/**
+    - "**/anvilmcp-config.yaml"
+
+exec:
+  default: deny
+
+  allow:
+    python3: {}
+    pytest: {}
+    ls: {}
+    cat: {}
+    git:
+      args_deny:
+        - push
+        - reset
+        - clean
+
+  deny:
+    - rm
+    - dd
+    - mkfs*
+    - fdisk
+    - ssh
+    - scp
+
+  ask: {}
+  shell_interpolation: false
+  max_runtime_seconds: 300
+  max_output_bytes: 5000000
+  max_concurrent: 4
+
+env:
+  redact_patterns:
+    - '(?i)secret'
+    - '(?i)token'
+    - '(?i)password'
+    - '(?i)api[_-]?key'
+    - '(?i)credential'
+  explicit_deny: []
+  allow_only: []
+
+audit:
+  history_db_path: /home/anvilmcp/.local/state/anvilmcp/history.db
+  retention_days: 30
+  max_total_bytes: 1073741824
+  no_store_output: []
+  no_store_tools: []

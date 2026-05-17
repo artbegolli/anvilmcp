@@ -13,7 +13,7 @@ help:
 	@echo "  vet           - Run go vet"
 	@echo "  lint          - Run golangci-lint (if installed)"
 	@echo "  docker-build  - Build Docker image"
-	@echo "  docker-run    - Run Docker container (see docs/DOCKER.md)"
+	@echo "  docker-run    - Run Docker container (see docs/INTEGRATION_TESTING.md)"
 
 build:
 	go build -o ./bin/anvilmcp ./cmd/anvilmcp
@@ -54,7 +54,7 @@ docker-run:
 	docker run -it --rm \
 		-p 8080:8080 \
 		-v $(PWD)/workspace:/home/anvilmcp/workspace \
-		-v $(PWD)/.config/mcp-session:/home/anvilmcp/.config/mcp-session \
+		-v $(PWD)/.config/anvilmcp:/home/anvilmcp/.config/anvilmcp \
 		anvilmcp:latest
 
 .DEFAULT_GOAL := help
