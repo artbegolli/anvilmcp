@@ -1,0 +1,21 @@
+# AnvilMCP Policy Configuration
+# This policy allows all operations on the workspace for testing
+
+tools:
+  filesystem:
+    allow:
+      - path: /home/**
+      - path: /tmp/**
+    deny:
+      - path: /etc/**
+      - path: /root/**
+      - path: /.ssh/**
+
+  execution:
+    allow:
+      - cmd: ".*"
+    deny:
+      - cmd: "rm"
+      - cmd: "dd"
+      - cmd: "mkfs"
+      - cmd: "fdisk"

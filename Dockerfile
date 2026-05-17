@@ -50,14 +50,17 @@ RUN useradd -m -s /bin/bash -u 1000 -o anvilmcp && \
 WORKDIR /home/anvilmcp
 RUN chown -R anvilmcp:anvilmcp /home/anvilmcp
 
-# Switch to non-root user
-USER anvilmcp
-
 # Copy the binary from builder
 COPY --from=builder --chown=anvilmcp:anvilmcp /app/bin/anvilmcp /home/anvilmcp/anvilmcp
 
 # Create directories for workspace and config
 RUN mkdir -p /home/anvilmcp/.config/mcp-session /home/anvilmcp/workspace
+
+# Copy default policy file
+COPY --chown=anvilmcp:anvilmcp .config/mcp-session/policy.yaml /home/anvilmcp/.config/mcp-session/policy.yaml
+
+# Switch to non-root user
+USER anvilmcp
 
 # Set environment
 ENV PATH="/opt/micromamba/bin:$PATH"
