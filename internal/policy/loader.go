@@ -67,6 +67,18 @@ func (l *Loader) Effective() *Policy {
 	return l.effective
 }
 
+// UserPolicy returns the user layer as loaded (or DefaultPolicy() if the file
+// was missing). Used by `anvilmcp policy show --user`.
+func (l *Loader) UserPolicy() *Policy {
+	return l.userPolicy
+}
+
+// ClusterPolicy returns the cluster layer as loaded (or DefaultPolicy() if
+// the file was missing). Used by `anvilmcp policy show --cluster`.
+func (l *Loader) ClusterPolicy() *Policy {
+	return l.clusterPolicy
+}
+
 func (l *Loader) loadPolicy(path string) (*Policy, error) {
 	// Validate file ownership and permissions BEFORE reading
 	info, err := os.Stat(path)
