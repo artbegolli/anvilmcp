@@ -14,6 +14,14 @@ import (
 	"github.com/artbegolli/anvilmcp/internal/policy"
 )
 
+// printer wraps an io.Writer so the callers below can format output without
+// the errcheck noise of `_, _ = fmt.Fprintf(...)` at every line. Writes to
+// stdout/stderr don't have a meaningful recovery path from an I/O error.
+type printer struct{ w io.Writer }
+
+func (p printer) printf(format string, a ...any) { _, _ = fmt.Fprintf(p.w, format, a...) }
+func (p printer) println(a ...any)               { _, _ = fmt.Fprintln(p.w, a...) }
+
 // defaultConfigYAML is the canonical starter policy shipped with `policy init`.
 // Kept in sync with config.yaml.example at the repo root — that file is the
 // human-facing reference; this one is what the binary actually writes.
@@ -92,8 +100,9 @@ func runPolicyInit(out io.Writer, path string, force bool) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 
-	fmt.Fprintf(out, "Wrote default policy to %s\n", path)
-	fmt.Fprintln(out, "Edit that file to narrow the policy, then run `anvilmcp policy show` to inspect the effective result.")
+	p := printer{out}
+	p.printf("Wrote default policy to %s\n", path)
+	p.println("Edit that file to narrow the policy, then run `anvilmcp policy show` to inspect the effective result.")
 	return nil
 }
 
@@ -232,11 +241,12 @@ func runPolicyTestPath(out io.Writer, paths *policyPathFlags, mode, path string)
 	}
 	d := engine.ResolvePath(path, mode)
 
-	fmt.Fprintf(out, "%s %s\n", verdict(d.Allowed), path)
-	fmt.Fprintf(out, "  resolved: %s\n", d.AbsPath)
-	fmt.Fprintf(out, "  rule:     %s\n", d.PolicyRule)
+	p := printer{out}
+	p.printf("%s %s\n", verdict(d.Allowed), path)
+	p.printf("  resolved: %s\n", d.AbsPath)
+	p.printf("  rule:     %s\n", d.PolicyRule)
 	if d.Reason != "" {
-		fmt.Fprintf(out, "  reason:   %s\n", d.Reason)
+		p.printf("  reason:   %s\n", d.Reason)
 	}
 	if !d.Allowed {
 		// Non-zero exit lets callers gate on this in shell pipelines. Cobra maps
@@ -254,13 +264,14 @@ func runPolicyTestExec(out io.Writer, paths *policyPathFlags, cmdName string, ar
 	}
 	d := engine.EvaluateExec(cmdName, argv)
 
-	fmt.Fprintf(out, "%s %s %v\n", verdict(d.Allowed), cmdName, argv)
-	fmt.Fprintf(out, "  rule:     %s\n", d.PolicyRule)
+	p := printer{out}
+	p.printf("%s %s %v\n", verdict(d.Allowed), cmdName, argv)
+	p.printf("  rule:     %s\n", d.PolicyRule)
 	if d.RequiresConfirmation {
-		fmt.Fprintln(out, "  note:     requires confirmation")
+		p.println("  note:     requires confirmation")
 	}
 	if d.Reason != "" {
-		fmt.Fprintf(out, "  reason:   %s\n", d.Reason)
+		p.printf("  reason:   %s\n", d.Reason)
 	}
 	if !d.Allowed {
 		return errDenied
