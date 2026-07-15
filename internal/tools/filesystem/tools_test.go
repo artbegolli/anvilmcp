@@ -129,7 +129,7 @@ func TestListRead(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
+	tools := NewTools(engine, logger, nil)
 	ctx := context.Background()
 
 	// Test reading a file inside workspace
@@ -192,7 +192,7 @@ func TestWriteProtection(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
+	tools := NewTools(engine, logger, nil)
 	ctx := context.Background()
 
 	// Test 1: Overwrite an existing file (should succeed)
@@ -262,7 +262,7 @@ func TestSymlinkResolution(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
+	tools := NewTools(engine, logger, nil)
 	ctx := context.Background()
 
 	// Attempt to read the symlink (should fail because it resolves to outside workspace)
@@ -302,7 +302,7 @@ func TestDeleteProtection(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
+	tools := NewTools(engine, logger, nil)
 	ctx := context.Background()
 
 	// Delete the file using absolute path
@@ -359,7 +359,7 @@ func TestListLimitValidation(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger)
+	tools := NewTools(engine, logger, nil)
 	ctx := context.Background()
 
 	// Test 1: Excessive limit is rejected
