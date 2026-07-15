@@ -9,22 +9,40 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/artbegolli/anvilmcp/internal/metrics"
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"go.uber.org/zap"
 )
 
 // Tools implements filesystem MCP tools.
 type Tools struct {
-	engine *policy.Engine
-	logger *zap.Logger
+	engine  *policy.Engine
+	logger  *zap.Logger
+	metrics *metrics.Registry
 }
 
-// NewTools creates a new filesystem tools handler.
-func NewTools(engine *policy.Engine, logger *zap.Logger) *Tools {
-	return &Tools{
-		engine: engine,
-		logger: logger,
+// NewTools creates a new filesystem tools handler. m may be nil.
+func NewTools(engine *policy.Engine, logger *zap.Logger, m *metrics.Registry) *Tools {
+	if m == nil {
+		m = metrics.NewNoop()
 	}
+	return &Tools{
+		engine:  engine,
+		logger:  logger,
+		metrics: m,
+	}
+}
+
+// resolveAndCount runs engine.ResolvePath and records the decision as an
+// anvilmcp_policy_decisions_total{chokepoint="path"} increment.
+func (t *Tools) resolveAndCount(path, mode string) policy.ResolvePathDecision {
+	decision := t.engine.ResolvePath(path, mode)
+	if decision.Allowed {
+		t.metrics.PolicyDecisions.WithLabelValues("path", "allow").Inc()
+	} else {
+		t.metrics.PolicyDecisions.WithLabelValues("path", "deny").Inc()
+	}
+	return decision
 }
 
 // ListRequest is the schema for fs.list.
@@ -51,7 +69,7 @@ type ListResponse struct {
 // HandleList handles the fs.list tool.
 func (t *Tools) HandleList(ctx context.Context, request *ListRequest) (*ListResponse, error) {
 	// Resolve path
-	decision := t.engine.ResolvePath(request.Path, "read")
+	decision := t.resolveAndCount(request.Path, "read")
 	if !decision.Allowed {
 		return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
@@ -112,7 +130,7 @@ type ReadResponse struct {
 // HandleRead handles the fs.read tool.
 func (t *Tools) HandleRead(ctx context.Context, request *ReadRequest) (*ReadResponse, error) {
 	// Resolve path
-	decision := t.engine.ResolvePath(request.Path, "read")
+	decision := t.resolveAndCount(request.Path, "read")
 	if !decision.Allowed {
 		return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
@@ -184,7 +202,7 @@ type WriteResponse struct {
 // HandleWrite handles the fs.write tool.
 func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteResponse, error) {
 	// Resolve path
-	decision := t.engine.ResolvePath(request.Path, "write")
+	decision := t.resolveAndCount(request.Path, "write")
 	if !decision.Allowed {
 		return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
@@ -208,7 +226,7 @@ func (t *Tools) HandleWrite(ctx context.Context, request *WriteRequest) (*WriteR
 
 		// Validate parent directory against policy before creating it
 		dir := filepath.Dir(absPath)
-		dirDecision := t.engine.ResolvePath(dir, "write")
+		dirDecision := t.resolveAndCount(dir, "write")
 		if !dirDecision.Allowed {
 			return nil, fmt.Errorf("parent directory access denied: operation not permitted (rule: %s)", dirDecision.PolicyRule)
 		}
@@ -255,7 +273,7 @@ type StatResponse struct {
 // HandleStat handles the fs.stat tool.
 func (t *Tools) HandleStat(ctx context.Context, request *StatRequest) (*StatResponse, error) {
 	// Resolve path
-	decision := t.engine.ResolvePath(request.Path, "read")
+	decision := t.resolveAndCount(request.Path, "read")
 	if !decision.Allowed {
 		return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
@@ -299,7 +317,7 @@ type SearchResult struct {
 // HandleSearch handles the fs.search tool (streaming).
 func (t *Tools) HandleSearch(ctx context.Context, request *SearchRequest) (interface{}, error) {
 	if request.Path != nil {
-		decision := t.engine.ResolvePath(*request.Path, "read")
+		decision := t.resolveAndCount(*request.Path, "read")
 		if !decision.Allowed {
 			return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 		}
@@ -330,7 +348,7 @@ type DeleteResponse struct {
 // HandleDelete handles the fs.delete tool.
 func (t *Tools) HandleDelete(ctx context.Context, request *DeleteRequest) (*DeleteResponse, error) {
 	// Resolve path
-	decision := t.engine.ResolvePath(request.Path, "write")
+	decision := t.resolveAndCount(request.Path, "write")
 	if !decision.Allowed {
 		return nil, fmt.Errorf("access denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}

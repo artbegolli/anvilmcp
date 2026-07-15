@@ -43,7 +43,7 @@ func TestShellBasic(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger, sessConfig, 4)
+	tools := NewTools(engine, logger, sessConfig, 4, nil)
 	ctx := context.Background()
 
 	// Test simple echo command
@@ -101,7 +101,7 @@ func TestShellDeniedCommand(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger, sessConfig, 4)
+	tools := NewTools(engine, logger, sessConfig, 4, nil)
 	ctx := context.Background()
 
 	// Attempt to run a denied command
@@ -152,7 +152,7 @@ func TestShellArgRestriction(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger, sessConfig, 4)
+	tools := NewTools(engine, logger, sessConfig, 4, nil)
 	ctx := context.Background()
 
 	// Attempt to run pip with a denied arg
@@ -199,7 +199,7 @@ func TestScriptExecution(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger, sessConfig, 4)
+	tools := NewTools(engine, logger, sessConfig, 4, nil)
 	ctx := context.Background()
 
 	// Execute a simple shell script
@@ -252,7 +252,7 @@ func TestConcurrentLimit(t *testing.T) {
 	}
 
 	engine := policy.NewEngine(p, "")
-	tools := NewTools(engine, logger, sessConfig, 1) // Max 1 concurrent
+	tools := NewTools(engine, logger, sessConfig, 1, nil) // Max 1 concurrent
 
 	// Start one execution (would block on sleep)
 	// For now, just verify the limit is enforced

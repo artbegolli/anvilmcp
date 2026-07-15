@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/artbegolli/anvilmcp/internal/config"
+	"github.com/artbegolli/anvilmcp/internal/metrics"
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"go.uber.org/zap"
 )
@@ -24,6 +25,7 @@ type Tools struct {
 	engine        *policy.Engine
 	logger        *zap.Logger
 	sessionConfig *config.SessionConfig
+	metrics       *metrics.Registry
 
 	concurrent    int32
 	maxConcurrent int32
@@ -35,17 +37,21 @@ type Tools struct {
 	totalBytesGenerated int64
 }
 
-// NewTools creates a new execution tools handler.
-func NewTools(engine *policy.Engine, logger *zap.Logger, sessConfig *config.SessionConfig, maxConcurrent int) *Tools {
+// NewTools creates a new execution tools handler. m may be nil.
+func NewTools(engine *policy.Engine, logger *zap.Logger, sessConfig *config.SessionConfig, maxConcurrent int, m *metrics.Registry) *Tools {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	} else if maxConcurrent > math.MaxInt32 {
 		maxConcurrent = math.MaxInt32
 	}
+	if m == nil {
+		m = metrics.NewNoop()
+	}
 	return &Tools{
 		engine:           engine,
 		logger:           logger,
 		sessionConfig:    sessConfig,
+		metrics:          m,
 		maxConcurrent:    int32(maxConcurrent),
 		maxExecPerSecond: 10,              // Allow 10 executions per second
 		maxTotalBytes:    1024 * 1024 * 1024, // 1GB per session
@@ -76,6 +82,7 @@ type ShellResponse struct {
 func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellResponse, error) {
 	// Check rate limit BEFORE acquiring concurrent slot
 	if !t.checkRateLimit() {
+		t.metrics.ExecRateLimited.Inc()
 		return nil, fmt.Errorf("rate limit exceeded: maximum %d executions per second", t.maxExecPerSecond)
 	}
 
@@ -83,7 +90,11 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	if !t.acquireConcurrentSlot() {
 		return nil, fmt.Errorf("max concurrent executions reached")
 	}
-	defer t.releaseConcurrentSlot()
+	t.metrics.ExecConcurrent.Inc()
+	defer func() {
+		t.releaseConcurrentSlot()
+		t.metrics.ExecConcurrent.Dec()
+	}()
 
 	// Validate command
 	if request.Cmd == "" {
@@ -93,8 +104,10 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	// Evaluate execution policy
 	decision := t.engine.EvaluateExec(request.Cmd, request.Argv)
 	if !decision.Allowed {
+		t.metrics.PolicyDecisions.WithLabelValues("exec", "deny").Inc()
 		return nil, fmt.Errorf("execution denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
+	t.metrics.PolicyDecisions.WithLabelValues("exec", "allow").Inc()
 
 	if decision.RequiresConfirmation {
 		return nil, fmt.Errorf("execution requires confirmation (rule: %s)", decision.PolicyRule)
@@ -105,8 +118,10 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	if request.CWD != nil {
 		pathDecision := t.engine.ResolvePath(*request.CWD, "read")
 		if !pathDecision.Allowed {
+			t.metrics.PolicyDecisions.WithLabelValues("path", "deny").Inc()
 			return nil, fmt.Errorf("cwd access denied: %s", pathDecision.Reason)
 		}
+		t.metrics.PolicyDecisions.WithLabelValues("path", "allow").Inc()
 		cwd = pathDecision.AbsPath
 	}
 
@@ -122,6 +137,7 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	// Request-supplied vars override inherited values of the same name; vars
 	// rejected by policy are dropped silently rather than failing the call.
 	var cmdEnv []string
+	var envAllow, envDeny int
 	for _, envStr := range os.Environ() {
 		parts := strings.SplitN(envStr, "=", 2)
 		if len(parts) != 2 {
@@ -130,14 +146,19 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		k, v := parts[0], parts[1]
 		if envDecision := t.engine.FilterEnv(k, v); envDecision.Allowed {
 			cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
+			envAllow++
+		} else {
+			envDeny++
 		}
 	}
 
 	for k, v := range request.Env {
 		envDecision := t.engine.FilterEnv(k, v)
 		if !envDecision.Allowed {
+			envDeny++
 			continue
 		}
+		envAllow++
 		replaced := false
 		for i, envStr := range cmdEnv {
 			if strings.HasPrefix(envStr, k+"=") {
@@ -149,6 +170,14 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		if !replaced {
 			cmdEnv = append(cmdEnv, k+"="+envDecision.Value)
 		}
+	}
+	// Env decisions are batched per-exec to keep the per-var overhead invisible
+	// on the hot path but still visible in aggregate.
+	if envAllow > 0 {
+		t.metrics.PolicyDecisions.WithLabelValues("env", "allow").Add(float64(envAllow))
+	}
+	if envDeny > 0 {
+		t.metrics.PolicyDecisions.WithLabelValues("env", "deny").Add(float64(envDeny))
 	}
 
 	cmd.Env = cmdEnv
@@ -177,6 +206,7 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	start := time.Now()
 	err := cmd.Run()
 	duration := time.Since(start)
+	t.metrics.ExecDuration.Observe(duration.Seconds())
 
 	exitCode := 0
 	if err != nil {
@@ -191,6 +221,7 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 
 	// Track total output bytes for session limit
 	totalBytes := stdoutLimited.written + stderrLimited.written
+	t.metrics.ExecOutputBytes.Add(float64(totalBytes))
 	t.rateLimitMu.Lock()
 	t.totalBytesGenerated += totalBytes
 	if t.totalBytesGenerated > t.maxTotalBytes {
