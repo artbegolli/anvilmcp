@@ -65,6 +65,12 @@ type ShellRequest struct {
 	CWD             *string  `json:"cwd,omitempty"`
 	Env             map[string]string `json:"env,omitempty"`
 	TimeoutSeconds  *int     `json:"timeout_seconds,omitempty"`
+
+	// OnChunk, when non-nil, receives batched stdout/stderr output while the
+	// process runs. Set by the server adapter when the MCP client supplied a
+	// progressToken; nil means fully buffered behavior. Not part of the wire
+	// schema.
+	OnChunk ChunkFunc `json:"-"`
 }
 
 // ShellResponse is the response from exec.shell.
@@ -182,15 +188,25 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 
 	cmd.Env = cmdEnv
 
-	// Setup output capture
+	// Setup output capture. The limitedWriters remain the source of truth for
+	// what's captured; when the caller wants streaming, tee through
+	// streamingWriters that batch copies of the same bytes out via OnChunk.
 	var stdout, stderr bytes.Buffer
 	const maxOutputBytes = 10 * 1024 * 1024 // 10 MB
 
 	stdoutLimited := &limitedWriter{dst: &stdout, limit: int64(maxOutputBytes)}
 	stderrLimited := &limitedWriter{dst: &stderr, limit: int64(maxOutputBytes)}
 
-	cmd.Stdout = stdoutLimited
-	cmd.Stderr = stderrLimited
+	var stdoutStream, stderrStream *streamingWriter
+	if request.OnChunk != nil {
+		stdoutStream = newStreamingWriter(stdoutLimited, "stdout", request.OnChunk)
+		stderrStream = newStreamingWriter(stderrLimited, "stderr", request.OnChunk)
+		cmd.Stdout = stdoutStream
+		cmd.Stderr = stderrStream
+	} else {
+		cmd.Stdout = stdoutLimited
+		cmd.Stderr = stderrLimited
+	}
 	cmd.Stdin = nil // Never allow interactive input
 
 	// Apply timeout
@@ -207,6 +223,13 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	err := cmd.Run()
 	duration := time.Since(start)
 	t.metrics.ExecDuration.Observe(duration.Seconds())
+
+	// Close explicitly (not deferred) so the trailing chunk is delivered
+	// while the request is still open, before the final response is built.
+	if stdoutStream != nil {
+		stdoutStream.Close()
+		stderrStream.Close()
+	}
 
 	exitCode := 0
 	if err != nil {
@@ -250,6 +273,10 @@ type ScriptRequest struct {
 	CWD            *string           `json:"cwd,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds *int              `json:"timeout_seconds,omitempty"`
+
+	// OnChunk mirrors ShellRequest.OnChunk; passed through to the underlying
+	// shell invocation.
+	OnChunk ChunkFunc `json:"-"`
 }
 
 // ScriptResponse is the response from exec.script.
@@ -327,6 +354,7 @@ func (t *Tools) HandleScript(ctx context.Context, request *ScriptRequest) (*Scri
 		CWD:            request.CWD,
 		Env:            request.Env,
 		TimeoutSeconds: request.TimeoutSeconds,
+		OnChunk:        request.OnChunk,
 	})
 
 	if err != nil {
@@ -422,4 +450,11 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	n, err := lw.dst.Write(p[:toWrite])
 	lw.written += int64(n)
 	return len(p), err
+}
+
+// isTruncated reports whether the writer has hit its cap.
+func (lw *limitedWriter) isTruncated() bool {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.truncated
 }

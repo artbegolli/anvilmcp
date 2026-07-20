@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -635,6 +636,40 @@ func fsToolDeleteHandler(fsTools *filesystem.Tools) mcpserver.ToolHandlerFunc {
 	}
 }
 
+// chunkNotifier returns an exec.ChunkFunc that forwards batched process
+// output to the client as notifications/progress, or nil when the client
+// didn't opt in.
+//
+// Opt-in is signaled by the MCP progressToken (params._meta.progressToken):
+// clients that pass one are declaring they can consume progress
+// notifications for this call. progress carries cumulative streamed bytes
+// (monotonically increasing, as the spec requires), message carries the
+// chunk text, and a non-spec "stream" field distinguishes stdout/stderr.
+// Send failures are deliberately dropped: streaming is best-effort and the
+// final tool result remains authoritative.
+func chunkNotifier(ctx context.Context, request mcp.CallToolRequest) exec.ChunkFunc {
+	if request.Params.Meta == nil || request.Params.Meta.ProgressToken == nil {
+		return nil
+	}
+	token := request.Params.Meta.ProgressToken
+
+	mcpSrv := mcpserver.ServerFromContext(ctx)
+	if mcpSrv == nil {
+		return nil
+	}
+
+	var streamedBytes atomic.Int64
+	return func(stream string, data []byte) {
+		total := streamedBytes.Add(int64(len(data)))
+		_ = mcpSrv.SendNotificationToClient(ctx, "notifications/progress", map[string]any{
+			"progressToken": token,
+			"progress":      total,
+			"message":       string(data),
+			"stream":        stream,
+		})
+	}
+}
+
 func execToolShellHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cmd := request.GetString("cmd", "")
@@ -669,6 +704,7 @@ func execToolShellHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 			CWD:            cwdPtr,
 			Env:            envStrMap,
 			TimeoutSeconds: timeoutPtr,
+			OnChunk:        chunkNotifier(ctx, request),
 		})
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -724,6 +760,7 @@ func execToolScriptHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 			CWD:            cwdPtr,
 			Env:            envStrMap,
 			TimeoutSeconds: timeoutPtr,
+			OnChunk:        chunkNotifier(ctx, request),
 		})
 		if err != nil {
 			return &mcp.CallToolResult{
