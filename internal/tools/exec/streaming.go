@@ -3,6 +3,7 @@ package exec
 import (
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ChunkFunc receives incremental output from a running process. stream is
@@ -34,9 +35,14 @@ type streamingWriter struct {
 	stream  string
 	onChunk ChunkFunc
 
-	mu      sync.Mutex
-	pending []byte
-	closed  bool
+	// mu guards pending/closed. deliverMu serializes pop+deliver as a unit:
+	// without it, the ticker flush and Write's threshold flush could each pop
+	// a chunk and then race to invoke onChunk, delivering stream content out
+	// of order.
+	mu        sync.Mutex
+	pending   []byte
+	closed    bool
+	deliverMu sync.Mutex
 
 	stopTicker chan struct{}
 	tickerDone chan struct{}
@@ -58,7 +64,7 @@ func newStreamingWriter(dst *limitedWriter, stream string, onChunk ChunkFunc) *s
 		for {
 			select {
 			case <-ticker.C:
-				sw.flush()
+				sw.deliver(false)
 			case <-sw.stopTicker:
 				return
 			}
@@ -77,24 +83,33 @@ func (sw *streamingWriter) Write(p []byte) (int, error) {
 	if !sw.closed && !sw.dst.isTruncated() {
 		sw.pending = append(sw.pending, p...)
 	}
-	var chunk []byte
-	if len(sw.pending) >= streamFlushBytes {
-		chunk = sw.pending
-		sw.pending = nil
-	}
+	over := len(sw.pending) >= streamFlushBytes
 	sw.mu.Unlock()
 
-	if len(chunk) > 0 {
-		sw.onChunk(sw.stream, chunk)
+	if over {
+		sw.deliver(false)
 	}
 	return n, err
 }
 
-// flush delivers any pending bytes.
-func (sw *streamingWriter) flush() {
+// deliver pops the pending buffer and invokes onChunk with it. Pop and
+// delivery happen under deliverMu as one unit so concurrent deliveries
+// (ticker vs threshold) can't reorder chunks. Unless final, a trailing
+// incomplete UTF-8 sequence is held back so multi-byte runes aren't split
+// across chunk boundaries (which would surface as U+FFFD on the client).
+func (sw *streamingWriter) deliver(final bool) {
+	sw.deliverMu.Lock()
+	defer sw.deliverMu.Unlock()
+
 	sw.mu.Lock()
 	chunk := sw.pending
 	sw.pending = nil
+	if !final {
+		if hold := trailingIncompleteUTF8(chunk); hold > 0 {
+			sw.pending = append(sw.pending, chunk[len(chunk)-hold:]...)
+			chunk = chunk[:len(chunk)-hold]
+		}
+	}
 	sw.mu.Unlock()
 
 	if len(chunk) > 0 {
@@ -116,5 +131,44 @@ func (sw *streamingWriter) Close() {
 
 	close(sw.stopTicker)
 	<-sw.tickerDone
-	sw.flush()
+	sw.deliver(true)
+}
+
+// trailingIncompleteUTF8 returns how many trailing bytes of b form the start
+// of a UTF-8 sequence whose continuation hasn't arrived yet (0..3). Invalid
+// or binary tails return 0 — they're passed through rather than held forever.
+func trailingIncompleteUTF8(b []byte) int {
+	n := len(b)
+	if n == 0 {
+		return 0
+	}
+
+	// Walk back over continuation bytes (10xxxxxx), at most 3.
+	start := n - 1
+	for start >= 0 && n-start < utf8.UTFMax && b[start]&0xC0 == 0x80 {
+		start--
+	}
+	if start < 0 || b[start]&0xC0 == 0x80 {
+		return 0 // nothing but continuations: not a truncated sequence we can fix
+	}
+
+	var expected int
+	switch {
+	case b[start]&0x80 == 0x00:
+		expected = 1
+	case b[start]&0xE0 == 0xC0:
+		expected = 2
+	case b[start]&0xF0 == 0xE0:
+		expected = 3
+	case b[start]&0xF8 == 0xF0:
+		expected = 4
+	default:
+		return 0 // invalid start byte: pass through
+	}
+
+	got := n - start
+	if got < expected {
+		return got // sequence is still incomplete: hold it back
+	}
+	return 0 // complete (or overlong garbage): pass through
 }

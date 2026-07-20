@@ -172,6 +172,115 @@ func TestHandleShellStreamsChunks(t *testing.T) {
 	}
 }
 
+func TestStreamingWriterPreservesOrder(t *testing.T) {
+	// The ticker flush and Write's threshold flush run on different
+	// goroutines; deliveries must still arrive in stream order. Hammer the
+	// writer with sequential data and assert the chunk concatenation equals
+	// the input exactly.
+	var sink bytes.Buffer
+	lw := &limitedWriter{dst: &sink, limit: 64 << 20}
+	col := &chunkCollector{}
+	sw := newStreamingWriter(lw, "stdout", func(stream string, data []byte) {
+		col.mu.Lock()
+		col.chunks = append(col.chunks, string(data))
+		col.mu.Unlock()
+	})
+
+	var want bytes.Buffer
+	line := []byte(strings.Repeat("0123456789", 100) + "\n") // ~1KB per write
+	for i := 0; i < 20000; i++ {
+		want.Write(line)
+		if _, err := sw.Write(line); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	sw.Close()
+
+	col.mu.Lock()
+	got := strings.Join(col.chunks, "")
+	col.mu.Unlock()
+
+	if got != want.String() {
+		t.Fatalf("chunk concatenation diverged from input: got %d bytes, want %d bytes", len(got), want.Len())
+	}
+}
+
+func TestStreamingWriterHoldsIncompleteUTF8(t *testing.T) {
+	var sink bytes.Buffer
+	lw := &limitedWriter{dst: &sink, limit: 1 << 20}
+	col := &chunkCollector{}
+	sw := newStreamingWriter(lw, "stdout", col.fn)
+
+	// "é" is 0xC3 0xA9. Write the first byte, force a non-final delivery, and
+	// the incomplete sequence must be held back rather than split.
+	if _, err := sw.Write([]byte{'a', 0xC3}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sw.deliver(false)
+	if got := col.joined(); got != "stdout:a" {
+		t.Fatalf("expected only complete runes delivered, got %q", got)
+	}
+
+	// Completing the rune and closing flushes the rest.
+	if _, err := sw.Write([]byte{0xA9}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sw.Close()
+	if got := col.joined(); got != "stdout:a|stdout:é" {
+		t.Fatalf("expected held-back bytes delivered on close, got %q", got)
+	}
+}
+
+func TestHandleShellBudgetStopsStreaming(t *testing.T) {
+	logger := zap.NewNop()
+	tmpdir := t.TempDir()
+
+	sessConfig := &config.SessionConfig{SessionID: "test", WorkspaceRoot: tmpdir, HomeDir: tmpdir}
+	p := &policy.Policy{
+		Version: 1,
+		Session: policy.SessionPolicy{CWD: tmpdir},
+		Paths:   policy.PathsPolicy{WorkspaceRoot: tmpdir, AllowRead: []string{tmpdir + "/**"}, AllowWrite: []string{tmpdir + "/**"}},
+		Exec:    policy.ExecPolicy{Default: "deny", Allow: map[string]policy.CommandPolicy{"sh": {}}},
+	}
+
+	engine := policy.NewEngine(p, "")
+	tools := NewTools(engine, logger, sessConfig, 4, nil)
+	tools.maxTotalBytes = 16 // tiny session budget
+
+	col := &chunkCollector{}
+	_, err := tools.HandleShell(context.Background(), &ShellRequest{
+		Cmd:     "sh",
+		Argv:    []string{"-c", "printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"}, // 40 bytes > budget
+		OnChunk: col.fn,
+	})
+	if err == nil {
+		t.Fatal("expected budget error from HandleShell")
+	}
+	if !strings.Contains(err.Error(), "output exceeded") && !strings.Contains(err.Error(), "budget") {
+		t.Errorf("expected budget-related error, got: %v", err)
+	}
+
+	// Streamed bytes must not exceed the budget: chunks past it are dropped.
+	var streamed int
+	col.mu.Lock()
+	for _, c := range col.chunks {
+		streamed += len(c) - len("stdout:")
+	}
+	col.mu.Unlock()
+	if streamed > 16 {
+		t.Errorf("streamed %d bytes past a 16-byte session budget", streamed)
+	}
+
+	// A subsequent call must be refused before the process even runs.
+	_, err = tools.HandleShell(context.Background(), &ShellRequest{
+		Cmd:  "sh",
+		Argv: []string{"-c", "echo more"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "exhausted") {
+		t.Errorf("expected upfront budget refusal, got: %v", err)
+	}
+}
+
 func TestHandleShellNoCallbackStaysBuffered(t *testing.T) {
 	logger := zap.NewNop()
 	tmpdir := t.TempDir()

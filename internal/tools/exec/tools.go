@@ -102,6 +102,17 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		t.metrics.ExecConcurrent.Dec()
 	}()
 
+	// Refuse upfront if the session output budget is already exhausted.
+	// Previously the check only ran after execution, which meant the process
+	// ran (and streaming, below, would already have delivered its output)
+	// before the budget denial — making the budget an accounting fiction.
+	t.rateLimitMu.Lock()
+	budgetExhausted := t.totalBytesGenerated >= t.maxTotalBytes
+	t.rateLimitMu.Unlock()
+	if budgetExhausted {
+		return nil, fmt.Errorf("session total output budget exhausted (limit: %d bytes)", t.maxTotalBytes)
+	}
+
 	// Validate command
 	if request.Cmd == "" {
 		return nil, fmt.Errorf("cmd is required")
@@ -197,10 +208,33 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	stdoutLimited := &limitedWriter{dst: &stdout, limit: int64(maxOutputBytes)}
 	stderrLimited := &limitedWriter{dst: &stderr, limit: int64(maxOutputBytes)}
 
+	// streamedCounted is a shadow tally of bytes already streamed this
+	// invocation (guarded by rateLimitMu). It is never committed to
+	// totalBytesGenerated — the post-run accounting charges the full captured
+	// byte count, which includes every streamed byte — but the mid-run budget
+	// check below needs it to see in-flight usage before that commit lands.
+	var streamedCounted int64
 	var stdoutStream, stderrStream *streamingWriter
 	if request.OnChunk != nil {
-		stdoutStream = newStreamingWriter(stdoutLimited, "stdout", request.OnChunk)
-		stderrStream = newStreamingWriter(stderrLimited, "stderr", request.OnChunk)
+		// Wrap the caller's callback with budget enforcement: each chunk is
+		// charged against the session output budget before delivery, and
+		// streaming stops (capture continues) once the budget is exhausted.
+		// Without this, streamed chunks would bypass the budget entirely —
+		// the post-run denial below withholds the response, but streamed
+		// bytes would already be on the wire.
+		inner := request.OnChunk
+		budgeted := func(stream string, data []byte) {
+			t.rateLimitMu.Lock()
+			if t.totalBytesGenerated+streamedCounted+int64(len(data)) > t.maxTotalBytes {
+				t.rateLimitMu.Unlock()
+				return
+			}
+			streamedCounted += int64(len(data))
+			t.rateLimitMu.Unlock()
+			inner(stream, data)
+		}
+		stdoutStream = newStreamingWriter(stdoutLimited, "stdout", budgeted)
+		stderrStream = newStreamingWriter(stderrLimited, "stderr", budgeted)
 		cmd.Stdout = stdoutStream
 		cmd.Stderr = stderrStream
 	} else {
