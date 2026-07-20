@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -346,7 +347,7 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, lo
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		wrapTool(logger, m, "exec.shell", execToolShellHandler(execTools)),
+		wrapTool(logger, m, "exec.shell", execToolShellHandler(execTools, m)),
 	)
 
 	mcpServer.AddTool(
@@ -360,7 +361,7 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, lo
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		wrapTool(logger, m, "exec.script", execToolScriptHandler(execTools)),
+		wrapTool(logger, m, "exec.script", execToolScriptHandler(execTools, m)),
 	)
 }
 
@@ -635,7 +636,66 @@ func fsToolDeleteHandler(fsTools *filesystem.Tools) mcpserver.ToolHandlerFunc {
 	}
 }
 
-func execToolShellHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
+// chunkNotifier returns an exec.ChunkFunc that forwards batched process
+// output to the client as notifications/progress, or nil when the client
+// didn't opt in.
+//
+// Opt-in is signaled by the MCP progressToken (params._meta.progressToken):
+// clients that pass one are declaring they can consume progress
+// notifications for this call.
+func chunkNotifier(ctx context.Context, request mcp.CallToolRequest, m *metrics.Registry) exec.ChunkFunc {
+	if request.Params.Meta == nil || request.Params.Meta.ProgressToken == nil {
+		return nil
+	}
+	token := request.Params.Meta.ProgressToken
+
+	mcpSrv := mcpserver.ServerFromContext(ctx)
+	if mcpSrv == nil {
+		return nil
+	}
+
+	send := func(params map[string]any) error {
+		return mcpSrv.SendNotificationToClient(ctx, "notifications/progress", params)
+	}
+	return progressChunkFunc(token, send, m)
+}
+
+// progressChunkFunc builds the ChunkFunc that emits progress notifications.
+// Split from chunkNotifier so the notification logic is testable without an
+// MCP session in context.
+//
+// progress carries cumulative streamed bytes, message the chunk text, and a
+// non-spec "stream" field distinguishes stdout/stderr. The whole
+// increment+send is serialized under one mutex: stdout and stderr flush from
+// separate goroutines, and without serialization a higher progress value
+// could reach the wire before a lower one, violating the spec requirement
+// that progress increases monotonically. Send failures increment
+// anvilmcp_exec_stream_chunks_total{result="failed"} and are otherwise
+// dropped — streaming is best-effort and the final tool result stays
+// authoritative.
+func progressChunkFunc(token any, send func(map[string]any) error, m *metrics.Registry) exec.ChunkFunc {
+	var mu sync.Mutex
+	var streamedBytes int64
+	return func(stream string, data []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		streamedBytes += int64(len(data))
+		err := send(map[string]any{
+			"progressToken": token,
+			"progress":      streamedBytes,
+			"message":       string(data),
+			"stream":        stream,
+		})
+		if err != nil {
+			m.ExecStreamChunks.WithLabelValues("failed").Inc()
+			return
+		}
+		m.ExecStreamChunks.WithLabelValues("sent").Inc()
+	}
+}
+
+func execToolShellHandler(execTools *exec.Tools, m *metrics.Registry) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cmd := request.GetString("cmd", "")
 		argv := request.GetStringSlice("argv", nil)
@@ -669,6 +729,7 @@ func execToolShellHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 			CWD:            cwdPtr,
 			Env:            envStrMap,
 			TimeoutSeconds: timeoutPtr,
+			OnChunk:        chunkNotifier(ctx, request, m),
 		})
 		if err != nil {
 			return &mcp.CallToolResult{
@@ -688,7 +749,7 @@ func execToolShellHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 	}
 }
 
-func execToolScriptHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
+func execToolScriptHandler(execTools *exec.Tools, m *metrics.Registry) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		language := request.GetString("language", "")
 		content := request.GetString("content", "")
@@ -724,6 +785,7 @@ func execToolScriptHandler(execTools *exec.Tools) mcpserver.ToolHandlerFunc {
 			CWD:            cwdPtr,
 			Env:            envStrMap,
 			TimeoutSeconds: timeoutPtr,
+			OnChunk:        chunkNotifier(ctx, request, m),
 		})
 		if err != nil {
 			return &mcp.CallToolResult{

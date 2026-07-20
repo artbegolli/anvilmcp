@@ -30,10 +30,11 @@ type Registry struct {
 	PolicyDecisions *prometheus.CounterVec
 
 	// Exec tool specifics
-	ExecConcurrent  prometheus.Gauge
-	ExecRateLimited prometheus.Counter
-	ExecOutputBytes prometheus.Counter
-	ExecDuration    prometheus.Histogram
+	ExecConcurrent   prometheus.Gauge
+	ExecRateLimited  prometheus.Counter
+	ExecOutputBytes  prometheus.Counter
+	ExecDuration     prometheus.Histogram
+	ExecStreamChunks *prometheus.CounterVec
 
 	// Reliability
 	Panics   *prometheus.CounterVec
@@ -104,6 +105,11 @@ func build(reg *prometheus.Registry) *Registry {
 			Help:    "Wall-clock duration of subprocesses started by exec.shell (exec.script delegates through here). Use anvilmcp_tool_duration_seconds for the tool-facing latency including policy checks.",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 5, 15, 60, 300},
 		}),
+
+		ExecStreamChunks: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "anvilmcp_exec_stream_chunks_total",
+			Help: "Output chunks streamed to clients via notifications/progress, labeled by delivery result. Absence of samples means no client opted into streaming; a rising failed count means chunks are being dropped (streaming is best-effort; the final response is unaffected).",
+		}, []string{"result"}), // sent | failed
 
 		Panics: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "anvilmcp_panics_total",
