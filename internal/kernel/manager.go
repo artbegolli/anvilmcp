@@ -17,7 +17,7 @@ import (
 var harnessSource []byte
 
 const (
-	defaultMaxKernels = 4
+	defaultMaxKernels = 1
 	// DefaultTimeout is the per-execution deadline when a request omits one.
 	DefaultTimeout = 60 * time.Second
 )

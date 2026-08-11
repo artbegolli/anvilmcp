@@ -14,7 +14,9 @@ func newTestManager(t *testing.T) *Manager {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	m, err := NewManager(Options{PythonPath: "python3"})
+	// MaxKernels above the production default (1) so multi-kernel tests aren't
+	// constrained by it.
+	m, err := NewManager(Options{PythonPath: "python3", MaxKernels: 4})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

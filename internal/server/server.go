@@ -45,6 +45,7 @@ func NewServer(
 	sessConfig *config.SessionConfig,
 	userPolicyPath, clusterPolicyPath, historyDBPath string,
 	metricsReg *metrics.Registry,
+	kernelEnabled bool,
 ) (*Server, error) {
 	if metricsReg == nil {
 		metricsReg = metrics.NewNoop()
@@ -90,11 +91,11 @@ func NewServer(
 	registerPolicyTools(mcpServer, policyToolsHandler, logger, metricsReg)
 	registerResources(mcpServer, fsTools, policyToolsHandler, logger, metricsReg)
 
-	// Persistent Python kernels are opt-in (KERNEL_ENABLED). Enabling them lets
+	// Persistent Python kernels are opt-in (--enable-kernel). Enabling them lets
 	// the model run unmediated code as the container user, so they stay off by
 	// default. The launcher is gated through the exec chokepoint.
 	var kernelMgr *kernel.Manager
-	if sessConfig.KernelEnabled {
+	if kernelEnabled {
 		gate := func(argv []string) error {
 			d := policyEngine.EvaluateExec(argv[0], argv[1:])
 			if !d.Allowed {

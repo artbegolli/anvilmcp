@@ -37,6 +37,7 @@ func NewServeCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.MetricsPort, "metrics-port", ":9090", "Port to serve /metrics on; empty string disables")
 	cmd.Flags().BoolVar(&cfg.AutoRestart, "auto-restart", false, "Restart the MCP server on unexpected crash or error (SIGTERM/SIGINT are always terminal)")
 	cmd.Flags().IntVar(&cfg.MaxRestartAttempts, "max-restart-attempts", 5, "Give up after N consecutive failed restarts within a short window (0 = unlimited)")
+	cmd.Flags().BoolVar(&cfg.EnableKernel, "enable-kernel", false, "Enable the persistent Python kernel tools (kernel.*); off by default (lets the model run unmediated code as the container user)")
 
 	return cmd
 }
@@ -49,6 +50,7 @@ type ServeConfig struct {
 	MetricsPort        string
 	AutoRestart        bool
 	MaxRestartAttempts int
+	EnableKernel       bool
 }
 
 // runSupervised runs runServe once, or in a restart loop when --auto-restart
@@ -172,7 +174,7 @@ func runServeOnce(ctx context.Context, logger *zap.Logger, metricsReg *metrics.R
 		return err
 	}
 
-	srv, err := server.NewServer(ctx, logger, sessConfig, cfg.PolicyPath, cfg.ClusterPolicyPath, cfg.HistoryDBPath, metricsReg)
+	srv, err := server.NewServer(ctx, logger, sessConfig, cfg.PolicyPath, cfg.ClusterPolicyPath, cfg.HistoryDBPath, metricsReg, cfg.EnableKernel)
 	if err != nil {
 		logger.Error("Failed to initialize server", zap.Error(err))
 		return err
