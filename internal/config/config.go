@@ -4,16 +4,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SessionConfig holds session-level configuration from environment variables.
 type SessionConfig struct {
-	SessionID      string
-	WorkspaceRoot  string
-	VenvPath       string
-	PythonPath     string
-	UserID         string
-	HomeDir        string
+	SessionID     string
+	WorkspaceRoot string
+	VenvPath      string
+	PythonPath    string
+	UserID        string
+	HomeDir       string
+
+	// KernelEnabled turns on the persistent Python kernel tools (kernel.*).
+	// Off by default: enabling it lets the model run unmediated code as the
+	// container user (see docs / kernel design), so it is opt-in.
+	KernelEnabled bool
 }
 
 // NewSessionConfig loads session configuration from environment variables.
@@ -30,6 +36,7 @@ func NewSessionConfig() (*SessionConfig, error) {
 		PythonPath:    getEnv("PYTHON_PATH", "python3"),
 		UserID:        getEnv("USER", "root"),
 		HomeDir:       homeDir,
+		KernelEnabled: getEnvBool("KERNEL_ENABLED", false),
 	}
 
 	return cfg, nil
@@ -40,4 +47,15 @@ func getEnv(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
+}
+
+func getEnvBool(key string, defaultVal bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultVal
+	}
 }
