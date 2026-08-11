@@ -319,9 +319,3 @@ func (k *Kernel) status() Status {
 		DeadReason: k.deadReason,
 	}
 }
-
-func (k *Kernel) isDead() bool {
-	k.stateMu.Lock()
-	defer k.stateMu.Unlock()
-	return k.dead
-}
