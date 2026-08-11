@@ -3,6 +3,7 @@ package exec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/artbegolli/anvilmcp/internal/config"
@@ -19,6 +21,12 @@ import (
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"go.uber.org/zap"
 )
+
+// waitDelay bounds how long cmd.Wait blocks on output pipes after the process
+// has been signalled. The process-group kill below should close the pipes
+// promptly; this is a backstop for a descendant that escaped the group (e.g.
+// via setsid) so Wait can never hang a request forever.
+const waitDelay = 10 * time.Second
 
 // Tools implements execution MCP tools.
 type Tools struct {
@@ -142,11 +150,38 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		cwd = pathDecision.AbsPath
 	}
 
+	// Derive the execution deadline BEFORE constructing the command so the
+	// command is actually bound to it. Previously the command was bound to the
+	// request context and a separate timeout context was derived afterward,
+	// which left the per-call timeout inert — the process was only ever killed
+	// when the client disconnected, never by timeout_seconds or the default.
+	timeout := 5 * time.Minute
+	if request.TimeoutSeconds != nil && *request.TimeoutSeconds > 0 {
+		timeout = time.Duration(*request.TimeoutSeconds) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Build command. Cmd and Argv are user-supplied but EvaluateExec above has
 	// already gated them against the policy's allow/deny/ask lists; running them
 	// is the whole point of this tool.
 	cmd := exec.CommandContext(ctx, request.Cmd, request.Argv...) // #nosec G204 -- policy-gated
 	cmd.Dir = cwd
+
+	// Run the child in its own process group and kill the whole group on
+	// cancel/timeout. Without this, a payload that forks workers (Python
+	// multiprocessing/subprocess) leaves grandchildren holding the stdout/stderr
+	// pipes open after the immediate child is killed, so cmd.Wait blocks
+	// indefinitely past the deadline — wedging the request and leaking a
+	// concurrency slot. Killing the negative PID targets the group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = waitDelay
 
 	// Build the child env from the parent process env, filtered through policy
 	// (so denylisted/redacted vars like AWS_SECRET_ACCESS_KEY never reach the
@@ -243,15 +278,6 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	}
 	cmd.Stdin = nil // Never allow interactive input
 
-	// Apply timeout
-	timeout := 5 * time.Minute
-	if request.TimeoutSeconds != nil && *request.TimeoutSeconds > 0 {
-		timeout = time.Duration(*request.TimeoutSeconds) * time.Second
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	// Execute
 	start := time.Now()
 	err := cmd.Run()
@@ -265,13 +291,19 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		stderrStream.Close()
 	}
 
+	// Classify the exit code. The deadline check MUST come first: a timed-out
+	// process is killed by signal and therefore surfaces as an *exec.ExitError,
+	// so testing ExitError first (as this used to) made the timeout branch
+	// unreachable and reported -1 instead of 124.
 	exitCode := 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			exitCode = 124 // Conventional timeout exit code (matches timeout(1))
+		case errors.As(err, &exitErr):
 			exitCode = exitErr.ExitCode()
-		} else if ctx.Err() == context.DeadlineExceeded {
-			exitCode = 124 // Standard timeout exit code
-		} else {
+		default:
 			exitCode = 1
 		}
 	}
