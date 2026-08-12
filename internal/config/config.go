@@ -8,12 +8,12 @@ import (
 
 // SessionConfig holds session-level configuration from environment variables.
 type SessionConfig struct {
-	SessionID      string
-	WorkspaceRoot  string
-	VenvPath       string
-	PythonPath     string
-	UserID         string
-	HomeDir        string
+	SessionID     string
+	WorkspaceRoot string
+	VenvPath      string
+	PythonPath    string
+	UserID        string
+	HomeDir       string
 }
 
 // NewSessionConfig loads session configuration from environment variables.

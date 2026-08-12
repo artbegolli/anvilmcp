@@ -13,10 +13,12 @@ import (
 
 	"github.com/artbegolli/anvilmcp/internal/config"
 	"github.com/artbegolli/anvilmcp/internal/history"
+	"github.com/artbegolli/anvilmcp/internal/kernel"
 	"github.com/artbegolli/anvilmcp/internal/metrics"
 	"github.com/artbegolli/anvilmcp/internal/policy"
 	"github.com/artbegolli/anvilmcp/internal/tools/exec"
 	"github.com/artbegolli/anvilmcp/internal/tools/filesystem"
+	kerneltools "github.com/artbegolli/anvilmcp/internal/tools/kernel"
 	policytools "github.com/artbegolli/anvilmcp/internal/tools/policy"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -30,6 +32,7 @@ type Server struct {
 	policyEngine   *policy.Engine
 	historyStore   *history.Store
 	metrics        *metrics.Registry
+	kernelMgr      *kernel.Manager
 	mcpServer      *mcpserver.MCPServer
 	httpServer     *mcpserver.StreamableHTTPServer
 }
@@ -42,6 +45,7 @@ func NewServer(
 	sessConfig *config.SessionConfig,
 	userPolicyPath, clusterPolicyPath, historyDBPath string,
 	metricsReg *metrics.Registry,
+	kernelEnabled bool,
 ) (*Server, error) {
 	if metricsReg == nil {
 		metricsReg = metrics.NewNoop()
@@ -87,6 +91,31 @@ func NewServer(
 	registerPolicyTools(mcpServer, policyToolsHandler, logger, metricsReg)
 	registerResources(mcpServer, fsTools, policyToolsHandler, logger, metricsReg)
 
+	// Persistent Python kernels are opt-in (--enable-kernel). Enabling them lets
+	// the model run unmediated code as the container user, so they stay off by
+	// default. The launcher is gated through the exec chokepoint.
+	var kernelMgr *kernel.Manager
+	if kernelEnabled {
+		gate := func(argv []string) error {
+			d := policyEngine.EvaluateExec(argv[0], argv[1:])
+			if !d.Allowed {
+				return fmt.Errorf("kernel launcher denied by policy: %s (rule: %s)", d.Reason, d.PolicyRule)
+			}
+			return nil
+		}
+		km, err := kernel.NewManager(kernel.Options{
+			Logger:     logger,
+			PythonPath: sessConfig.PythonPath,
+			Gate:       gate,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize kernel manager: %w", err)
+		}
+		kernelMgr = km
+		registerKernelTools(mcpServer, kerneltools.NewTools(km, logger), logger, metricsReg)
+		logger.Info("Kernel tools enabled", zap.String("python", sessConfig.PythonPath))
+	}
+
 	srv := &Server{
 		logger:        logger,
 		sessionConfig: sessConfig,
@@ -94,6 +123,7 @@ func NewServer(
 		policyEngine:  policyEngine,
 		historyStore:  histStore,
 		metrics:       metricsReg,
+		kernelMgr:     kernelMgr,
 		mcpServer:     mcpServer,
 	}
 
@@ -117,6 +147,9 @@ func (s *Server) Start(addr string) error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.kernelMgr != nil {
+		s.kernelMgr.ShutdownAll()
+	}
 	if s.historyStore != nil {
 		if err := s.historyStore.Close(); err != nil {
 			s.logger.Error("Failed to close history store", zap.Error(err))
