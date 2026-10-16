@@ -185,6 +185,38 @@ mirror are created `0600` in a `0700` directory on that basis.
   small to satisfy is logged as a warning and left unsatisfied, rather than
   grinding the trail away hourly to meet it.
 
+#### Reading the trail
+
+```bash
+anvilmcp history list                      # recent calls, newest first
+anvilmcp history list --denied             # only what policy refused
+anvilmcp history list --unmediated         # only what no chokepoint evaluated
+anvilmcp history list --tool exec.shell --since 24h
+anvilmcp history show <id>                 # one call in full
+anvilmcp history tail                      # follow live
+```
+
+`--json` on any of them emits machine-readable output with the stored
+arguments re-embedded as a nested object, so `jq` can reach into them:
+
+```bash
+anvilmcp history list --json | jq -r '.[] | select(.decision=="unmediated") | .args.code'
+```
+
+These read the same database `anvilmcp serve` writes, resolving the path the
+same way (`audit.history_db_path` over `--history-db`, `~` expanded). They open
+it **read-only** and fail if it does not exist, rather than creating an empty
+one and reporting a quiet "no records" for what is actually a wrong path.
+
+`tail` prints a line when a call starts and another when it finishes, so a call
+that hangs shows up as a `running` line with no terminal partner. Calls already
+in flight when you start tailing are included.
+
+**There is deliberately no `history.*` MCP tool.** The model is the audited
+party; giving it a read interface onto its own trail would let it enumerate
+what the operator can see. Access is out-of-band: the CLI, the database, or the
+JSONL mirror.
+
 ## Testing Your Policy
 
 Use the `policy.test` tool to verify your policy rules:

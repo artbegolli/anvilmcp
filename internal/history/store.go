@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite"
 )
 
 // Store manages the command history database.
@@ -47,7 +47,60 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 		return nil, err
 	}
 
+	if err := s.restrictPermissions(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return s, nil
+}
+
+// restrictPermissions tightens the database files to 0600.
+//
+// SQLite creates them honouring the process umask, which on a typical image
+// yields 0644 -- world-readable, for a file holding command arguments and
+// output previews. The containing directory is 0700, so this is defence in
+// depth rather than the only barrier, but the audit trail should not be the
+// loosest thing on the volume.
+func (s *Store) restrictPermissions() error {
+	// The -wal and -shm sidecars inherit the main file's mode when SQLite
+	// creates them, but WAL mode is enabled on the connection string, so they
+	// may already exist by now.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		path := s.dbPath + suffix
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			return fmt.Errorf("restrict permissions on %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// OpenReadOnly opens an existing history database for reading.
+//
+// Distinct from NewStore, which creates the file and the schema: a reader that
+// did that would turn a typo'd --history-db into a silent empty result rather
+// than an error, which is precisely the wrong failure mode for an audit tool.
+func OpenReadOnly(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("history database %s: %w", dbPath, err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_journal_mode=WAL")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open history database: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to connect to history database: %w", err)
+	}
+
+	return &Store{db: db, dbPath: dbPath, logger: logger}, nil
 }
 
 // Close closes the database connection.
@@ -80,6 +133,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		stdout_blob_path TEXT,
 		stderr_blob_path TEXT,
 		cwd TEXT,
+		resolved_path TEXT,
 		env_snapshot_hash TEXT,
 		pinned BOOLEAN DEFAULT 0,
 		tags TEXT,
@@ -97,6 +151,53 @@ func (s *Store) initSchema(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
+	return s.migrate(ctx)
+}
+
+// migrate brings an existing table up to the current column set. CREATE TABLE
+// IF NOT EXISTS is a no-op against a database made by an earlier build, so new
+// columns have to be added explicitly.
+func (s *Store) migrate(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(history)")
+	if err != nil {
+		return fmt.Errorf("failed to inspect history schema: %w", err)
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid        int
+			name, typ  string
+			notNull    int
+			dflt       sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to read history schema: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	// Only additive, nullable columns belong here; each entry is a constant.
+	additions := []struct{ column, ddl string }{
+		{"resolved_path", "ALTER TABLE history ADD COLUMN resolved_path TEXT"},
+	}
+	for _, a := range additions {
+		if existing[a.column] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, a.ddl); err != nil {
+			return fmt.Errorf("failed to add column %s: %w", a.column, err)
+		}
+	}
+
 	return nil
 }
 
@@ -108,8 +209,8 @@ func (s *Store) InsertRecord(ctx context.Context, rec *Record) error {
 		ts_start, ts_end, status, tool, args_json, decision,
 		policy_rule, exit_code, duration_ms, stdout_bytes, stderr_bytes,
 		stdout_truncated, stderr_truncated, stdout_preview, stderr_preview,
-		stdout_blob_path, stderr_blob_path, cwd, env_snapshot_hash, pinned, tags
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		stdout_blob_path, stderr_blob_path, cwd, resolved_path, env_snapshot_hash, pinned, tags
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
@@ -117,7 +218,7 @@ func (s *Store) InsertRecord(ctx context.Context, rec *Record) error {
 		rec.TimestampStart, rec.TimestampEnd, rec.Status, rec.Tool, rec.ArgsJSON, rec.Decision,
 		rec.PolicyRule, rec.ExitCode, rec.DurationMS, rec.StdoutBytes, rec.StderrBytes,
 		rec.StdoutTruncated, rec.StderrTruncated, rec.StdoutPreview, rec.StderrPreview,
-		rec.StdoutBlobPath, rec.StderrBlobPath, rec.CWD, rec.EnvSnapshotHash, rec.Pinned, rec.Tags,
+		rec.StdoutBlobPath, rec.StderrBlobPath, rec.CWD, rec.ResolvedPath, rec.EnvSnapshotHash, rec.Pinned, rec.Tags,
 	)
 
 	if err != nil {
@@ -138,7 +239,7 @@ func (s *Store) UpdateRecord(ctx context.Context, rec *Record) error {
 	query := `
 	UPDATE history SET
 		ts_end = ?, status = ?, exit_code = ?, duration_ms = ?,
-		decision = ?, policy_rule = ?, cwd = ?,
+		decision = ?, policy_rule = ?, cwd = ?, resolved_path = ?,
 		stdout_bytes = ?, stderr_bytes = ?, stdout_truncated = ?,
 		stderr_truncated = ?, stdout_preview = ?, stderr_preview = ?,
 		stdout_blob_path = ?, stderr_blob_path = ?
@@ -147,7 +248,7 @@ func (s *Store) UpdateRecord(ctx context.Context, rec *Record) error {
 
 	_, err := s.db.ExecContext(ctx, query,
 		rec.TimestampEnd, rec.Status, rec.ExitCode, rec.DurationMS,
-		rec.Decision, rec.PolicyRule, rec.CWD,
+		rec.Decision, rec.PolicyRule, rec.CWD, rec.ResolvedPath,
 		rec.StdoutBytes, rec.StderrBytes, rec.StdoutTruncated,
 		rec.StderrTruncated, rec.StdoutPreview, rec.StderrPreview,
 		rec.StdoutBlobPath, rec.StderrBlobPath, rec.ID,
@@ -169,15 +270,13 @@ const recordColumns = `
 	ts_start, ts_end, status, tool, args_json, decision,
 	policy_rule, exit_code, duration_ms, stdout_bytes, stderr_bytes,
 	stdout_truncated, stderr_truncated, stdout_preview, stderr_preview,
-	stdout_blob_path, stderr_blob_path, cwd, env_snapshot_hash, pinned, tags`
+	stdout_blob_path, stderr_blob_path, cwd, resolved_path, env_snapshot_hash, pinned, tags`
 
 // Queries are declared as constant expressions rather than assembled at call
 // time: the column list is fixed, and keeping it constant means no SQL string
 // is ever built from a variable.
 const (
 	selectRecordByID = `SELECT ` + recordColumns + ` FROM history WHERE id = ?`
-	selectRecent     = `SELECT ` + recordColumns + ` FROM history ORDER BY ts_start DESC LIMIT ?`
-	selectByTool     = `SELECT ` + recordColumns + ` FROM history WHERE tool = ? ORDER BY ts_start DESC LIMIT ?`
 )
 
 func scanRecord(sc interface{ Scan(...any) error }) (*Record, error) {
@@ -187,7 +286,7 @@ func scanRecord(sc interface{ Scan(...any) error }) (*Record, error) {
 		&rec.TimestampStart, &rec.TimestampEnd, &rec.Status, &rec.Tool, &rec.ArgsJSON, &rec.Decision,
 		&rec.PolicyRule, &rec.ExitCode, &rec.DurationMS, &rec.StdoutBytes, &rec.StderrBytes,
 		&rec.StdoutTruncated, &rec.StderrTruncated, &rec.StdoutPreview, &rec.StderrPreview,
-		&rec.StdoutBlobPath, &rec.StderrBlobPath, &rec.CWD, &rec.EnvSnapshotHash, &rec.Pinned, &rec.Tags,
+		&rec.StdoutBlobPath, &rec.StderrBlobPath, &rec.CWD, &rec.ResolvedPath, &rec.EnvSnapshotHash, &rec.Pinned, &rec.Tags,
 	)
 	if err != nil {
 		return nil, err
@@ -204,9 +303,48 @@ func (s *Store) GetRecord(ctx context.Context, id string) (*Record, error) {
 	return rec, err
 }
 
-// ListRecent returns the N most recent history records.
-func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
-	rows, err := s.db.QueryContext(ctx, selectRecent, limit)
+// Filter narrows a history query. A zero value matches everything.
+type Filter struct {
+	Tool     string
+	Status   string
+	Decision string
+	Since    time.Time
+	Limit    int
+}
+
+// DefaultLimit caps an unbounded query.
+const DefaultLimit = 50
+
+// selectFiltered is one constant query with every filter made optional in SQL
+// rather than by assembling a WHERE clause at call time. Slower in principle —
+// no index short-circuit — and irrelevant in practice against a retention-
+// bounded table, in exchange for never building a SQL string from a variable.
+const selectFiltered = `SELECT ` + recordColumns + ` FROM history
+	WHERE (? = '' OR tool = ?)
+	  AND (? = '' OR status = ?)
+	  AND (? = '' OR decision = ?)
+	  AND (? = 0 OR ts_start >= ?)
+	ORDER BY ts_start DESC
+	LIMIT ?`
+
+// Query returns records matching f, newest first.
+func (s *Store) Query(ctx context.Context, f Filter) ([]*Record, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = DefaultLimit
+	}
+	var since int64
+	if !f.Since.IsZero() {
+		since = f.Since.UnixNano()
+	}
+
+	rows, err := s.db.QueryContext(ctx, selectFiltered,
+		f.Tool, f.Tool,
+		f.Status, f.Status,
+		f.Decision, f.Decision,
+		since, since,
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -220,29 +358,17 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
 		}
 		records = append(records, rec)
 	}
-
 	return records, rows.Err()
 }
 
-// ListByTool returns the N most recent records for a single tool. Used by the
-// audit tests and by `anvilmcp history` once that lands.
+// ListRecent returns the N most recent history records.
+func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
+	return s.Query(ctx, Filter{Limit: limit})
+}
+
+// ListByTool returns the N most recent records for a single tool.
 func (s *Store) ListByTool(ctx context.Context, tool string, limit int) ([]*Record, error) {
-	rows, err := s.db.QueryContext(ctx, selectByTool, tool, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var records []*Record
-	for rows.Next() {
-		rec, err := scanRecord(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, rec)
-	}
-
-	return records, rows.Err()
+	return s.Query(ctx, Filter{Tool: tool, Limit: limit})
 }
 
 // ErrSizeCapUnreachable reports that audit.max_total_bytes cannot be satisfied

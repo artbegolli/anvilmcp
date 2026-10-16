@@ -99,8 +99,11 @@ Phase 1 is shipped: filesystem + exec + policy tools, policy engine,
 MCP resources, Prometheus `/metrics`, an audit trail over every tool and
 resource call, and a persistent Python kernel (opt-in via `--enable-kernel`).
 
-Next up: surfacing the audit trail through the `history.*` tools and CLI,
-per-process path enforcement so the policy binds to code an allowed
+Read the trail with `anvilmcp history list|show|tail` (`--denied`,
+`--unmediated`, `--tool`, `--since`, `--json`); see
+[`docs/POLICY_CONFIGURATION.md`](docs/POLICY_CONFIGURATION.md#5-audit-configuration).
+
+Next up: per-process path enforcement so the policy binds to code an allowed
 interpreter runs, and richer rate-limit controls.
 
 ## License

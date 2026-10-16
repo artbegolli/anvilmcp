@@ -117,7 +117,7 @@ go test ./tests/e2e/               # Run end-to-end tests (add -short to skip)
 - [x] Python kernel execution (owned stdlib REPL harness, not Jupyter)
 - [x] Metrics and monitoring (`/metrics`, panic recovery, auto-restart)
 - [x] Audit trail over every tool and resource call
-- [ ] `history.*` tools and CLI to surface the audit trail
+- [x] `anvilmcp history list|show|tail` to read the trail (no MCP tool, by design)
 - [ ] Per-process path enforcement (landlock) so policy binds inside interpreters
 - [ ] Enhanced authentication and authorization
 - [ ] Advanced glob pattern matching with ripgrep

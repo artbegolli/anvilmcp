@@ -48,7 +48,7 @@ func (t *Tools) resolveAndCount(ctx context.Context, path, mode string) policy.R
 	if decision.Allowed {
 		t.metrics.PolicyDecisions.WithLabelValues("path", "allow").Inc()
 		entry.SetDecision(audit.DecisionAllow, decision.PolicyRule)
-		entry.SetCWD(decision.AbsPath)
+		entry.SetResolvedPath(decision.AbsPath)
 	} else {
 		t.metrics.PolicyDecisions.WithLabelValues("path", "deny").Inc()
 		entry.SetDecision(audit.DecisionDeny, decision.PolicyRule)

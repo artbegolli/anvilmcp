@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -224,5 +225,34 @@ func TestPruneUnreachableSizeCapKeepsRecentRecords(t *testing.T) {
 	}
 	if int64(len(got)) < minRetainedRecords {
 		t.Errorf("retained %d records, want at least %d", len(got), minRetainedRecords)
+	}
+}
+
+func TestDatabaseIsNotWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.db")
+	store, err := NewStore(context.Background(), path, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Write enough to force the WAL sidecars into existence.
+	for i := 0; i < 5; i++ {
+		if err := store.InsertRecord(context.Background(), NewRecord("m", "c", "exec.shell", `{"cmd":"ls"}`)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	// The trail holds command arguments and output previews; SQLite would
+	// otherwise create these 0644 under a typical umask.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(path + suffix)
+		if err != nil {
+			continue // sidecar not materialised on this platform
+		}
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("%s mode = %o, want no group/other access", path+suffix, perm)
+		}
 	}
 }

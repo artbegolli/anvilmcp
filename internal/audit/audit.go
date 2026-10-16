@@ -309,6 +309,19 @@ func (e *Entry) SetCWD(cwd string) {
 	e.rec.CWD = cwd
 }
 
+// SetResolvedPath records the post-symlink absolute target of a filesystem
+// call. Kept apart from SetCWD so the trail does not file a target path under
+// a column named cwd: the useful signal is the difference between this and the
+// raw path in the arguments, which is what a symlink escape looks like.
+func (e *Entry) SetResolvedPath(path string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rec.ResolvedPath = &path
+}
+
 // SetExitCode records a subprocess exit status.
 func (e *Entry) SetExitCode(code int) {
 	if e == nil {

@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -20,14 +18,4 @@ container sessions through the Model Context Protocol.`,
 	root.AddCommand(NewHistoryCommand())
 
 	return root
-}
-
-func notImplemented(use, short string) *cobra.Command {
-	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("%q is not yet implemented", cmd.CommandPath())
-		},
-	}
 }
