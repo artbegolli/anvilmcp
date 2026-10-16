@@ -139,6 +139,16 @@ func (l *Loader) computeEffectivePolicy() *Policy {
 		effective.Session.CWD = l.userPolicy.Session.CWD
 	}
 
+	// User workspace root overrides if set. This only moves the base used to
+	// resolve relative paths (and Session.CWD above takes precedence for that);
+	// every access still goes through the allow/deny lists, so carrying it over
+	// cannot broaden what the user may reach. Without this, a user-set
+	// workspace_root was silently dropped and policy.show reported a root
+	// inconsistent with the effective allow rules.
+	if l.userPolicy.Paths.WorkspaceRoot != "" {
+		effective.Paths.WorkspaceRoot = l.userPolicy.Paths.WorkspaceRoot
+	}
+
 	// Paths: union the most restrictive
 	if len(l.userPolicy.Paths.AllowRead) > 0 {
 		effective.Paths.AllowRead = l.userPolicy.Paths.AllowRead
