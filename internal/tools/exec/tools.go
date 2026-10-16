@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/artbegolli/anvilmcp/internal/audit"
 	"github.com/artbegolli/anvilmcp/internal/config"
 	"github.com/artbegolli/anvilmcp/internal/metrics"
 	"github.com/artbegolli/anvilmcp/internal/policy"
@@ -127,12 +128,15 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 	}
 
 	// Evaluate execution policy
+	entry := audit.FromContext(ctx)
 	decision := t.engine.EvaluateExec(request.Cmd, request.Argv)
 	if !decision.Allowed {
 		t.metrics.PolicyDecisions.WithLabelValues("exec", "deny").Inc()
+		entry.SetDecision(audit.DecisionDeny, decision.PolicyRule)
 		return nil, fmt.Errorf("execution denied: %s (rule: %s)", decision.Reason, decision.PolicyRule)
 	}
 	t.metrics.PolicyDecisions.WithLabelValues("exec", "allow").Inc()
+	entry.SetDecision(audit.DecisionAllow, decision.PolicyRule)
 
 	if decision.RequiresConfirmation {
 		return nil, fmt.Errorf("execution requires confirmation (rule: %s)", decision.PolicyRule)
@@ -144,11 +148,13 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 		pathDecision := t.engine.ResolvePath(*request.CWD, "read")
 		if !pathDecision.Allowed {
 			t.metrics.PolicyDecisions.WithLabelValues("path", "deny").Inc()
+			entry.SetDecision(audit.DecisionDeny, pathDecision.PolicyRule)
 			return nil, fmt.Errorf("cwd access denied: %s", pathDecision.Reason)
 		}
 		t.metrics.PolicyDecisions.WithLabelValues("path", "allow").Inc()
 		cwd = pathDecision.AbsPath
 	}
+	entry.SetCWD(cwd)
 
 	// Derive the execution deadline BEFORE constructing the command so the
 	// command is actually bound to it. Previously the command was bound to the
@@ -307,6 +313,13 @@ func (t *Tools) HandleShell(ctx context.Context, request *ShellRequest) (*ShellR
 			exitCode = 1
 		}
 	}
+
+	// Record the outcome before the budget check below, which can withhold the
+	// response: the process already ran, so it belongs on the record either way.
+	entry.SetExitCode(exitCode)
+	entry.SetOutput(stdout.String(), stderr.String(),
+		stdoutLimited.written, stderrLimited.written,
+		stdoutLimited.truncated || stderrLimited.truncated)
 
 	// Track total output bytes for session limit
 	totalBytes := stdoutLimited.written + stderrLimited.written

@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/artbegolli/anvilmcp/internal/audit"
 	kernelcore "github.com/artbegolli/anvilmcp/internal/kernel"
 )
 
@@ -92,6 +93,21 @@ func (t *Tools) HandleExec(ctx context.Context, req *ExecRequest) (*ExecResponse
 	if err != nil {
 		return nil, err
 	}
+
+	// The MCP call succeeds whether or not the cell did, so carry the kernel's
+	// own verdict onto the audit record. The decision stays "unmediated": only
+	// the interpreter launch was policy-gated, never this code.
+	entry := audit.FromContext(ctx)
+	entry.SetOutput(res.Stdout, res.Stderr, int64(len(res.Stdout)), int64(len(res.Stderr)), false)
+	switch res.Status {
+	case "ok":
+		entry.SetStatus(audit.StatusOK)
+	case "interrupted", "timeout":
+		entry.SetStatus(audit.StatusKilled)
+	default:
+		entry.SetStatus(audit.StatusError)
+	}
+
 	return &ExecResponse{
 		Status:         res.Status,
 		ExecutionCount: res.ExecutionCount,

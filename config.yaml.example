@@ -98,13 +98,28 @@ env:
   allow_only: []
 
 # Audit and history control
+# Every tool and resource invocation is recorded here: the call, its arguments
+# (secret-looking keys redacted per env.redact_patterns), the policy decision,
+# and the outcome. This is the control that still holds when the others are
+# stepped around -- an allow-listed interpreter can reach anything the
+# container can, so the trail is how you find out that it did.
 audit:
   history_db_path: ~/.local/state/anvilmcp/history.db
   retention_days: 30
-  max_total_bytes: 1073741824  # 1 GB
+  max_total_bytes: 1073741824  # 1 GB; oldest rows dropped first once exceeded
 
-  # Tools whose outputs are not stored in history
+  # Append completed records as JSON Lines, for a log shipper to tail.
+  # Unset disables the mirror; the database is written either way.
+  jsonl_mirror_path: ""
+
+  # Refuse a tool call when its audit record cannot be written. Off by default
+  # so a full or read-only state volume degrades the trail rather than the
+  # session. Turn it on where "no record" must mean "did not happen".
+  fail_closed: false
+
+  # Tools whose stdout/stderr previews are not stored (the call still is)
   no_store_output: []
 
-  # Tools that are not recorded in history
+  # Tools not recorded at all. Leaving this empty is the secure default;
+  # anything listed here executes with no durable record.
   no_store_tools: []

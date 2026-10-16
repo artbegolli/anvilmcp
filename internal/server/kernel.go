@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/artbegolli/anvilmcp/internal/audit"
 	"github.com/artbegolli/anvilmcp/internal/metrics"
 	kerneltools "github.com/artbegolli/anvilmcp/internal/tools/kernel"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -16,7 +17,7 @@ import (
 // registerKernelTools registers the kernel.* tools. Only called when kernels
 // are enabled (KERNEL_ENABLED); each handler is wrapped for logging, metrics,
 // and panic recovery like every other tool.
-func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, logger *zap.Logger, m *metrics.Registry) {
+func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"kernel.start",
@@ -24,7 +25,7 @@ func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, 
 			mcp.WithObject("env", mcp.Description("Environment to launch in: {type: system, ref: ...}; system only in this build")),
 			mcp.WithString("name", mcp.Description("Optional label for the kernel")),
 		),
-		wrapTool(logger, m, "kernel.start", kernelStartHandler(kt)),
+		wrapTool(logger, m, rec, "kernel.start", kernelStartHandler(kt)),
 	)
 
 	mcpServer.AddTool(
@@ -35,7 +36,7 @@ func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, 
 			mcp.WithString("code", mcp.Required(), mcp.Description("Python source to execute")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Per-execution timeout; interrupt then kill on expiry")),
 		),
-		wrapTool(logger, m, "kernel.exec", kernelExecHandler(kt)),
+		wrapTool(logger, m, rec, "kernel.exec", kernelExecHandler(kt)),
 	)
 
 	mcpServer.AddTool(
@@ -43,7 +44,7 @@ func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, 
 			"kernel.list",
 			mcp.WithDescription("List running kernels and their state"),
 		),
-		wrapTool(logger, m, "kernel.list", kernelListHandler(kt)),
+		wrapTool(logger, m, rec, "kernel.list", kernelListHandler(kt)),
 	)
 
 	mcpServer.AddTool(
@@ -52,7 +53,7 @@ func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, 
 			mcp.WithDescription("Report a kernel's state, execution count, and last activity"),
 			mcp.WithString("kernel_id", mcp.Required(), mcp.Description("Kernel to inspect")),
 		),
-		wrapTool(logger, m, "kernel.status", kernelStatusHandler(kt)),
+		wrapTool(logger, m, rec, "kernel.status", kernelStatusHandler(kt)),
 	)
 
 	mcpServer.AddTool(
@@ -61,7 +62,7 @@ func registerKernelTools(mcpServer *mcpserver.MCPServer, kt *kerneltools.Tools, 
 			mcp.WithDescription("Stop a kernel and discard its state"),
 			mcp.WithString("kernel_id", mcp.Required(), mcp.Description("Kernel to stop")),
 		),
-		wrapTool(logger, m, "kernel.shutdown", kernelShutdownHandler(kt)),
+		wrapTool(logger, m, rec, "kernel.shutdown", kernelShutdownHandler(kt)),
 	)
 }
 

@@ -96,10 +96,15 @@ directly inside the platform-provided dev container.
 ## Status
 
 Phase 1 is shipped: filesystem + exec + policy tools, policy engine,
-history store, MCP resources, full CI.
+MCP resources, Prometheus `/metrics`, an audit trail over every tool and
+resource call, and a persistent Python kernel (opt-in via `--enable-kernel`).
 
-Phase 2 (not yet implemented): Jupyter kernel execution with import-level
-policy enforcement, audit-log surfacing, richer rate-limit controls.
+Read the trail with `anvilmcp history list|show|tail` (`--denied`,
+`--unmediated`, `--tool`, `--since`, `--json`); see
+[`docs/POLICY_CONFIGURATION.md`](docs/POLICY_CONFIGURATION.md#5-audit-configuration).
+
+Next up: per-process path enforcement so the policy binds to code an allowed
+interpreter runs, and richer rate-limit controls.
 
 ## License
 

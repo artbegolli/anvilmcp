@@ -121,21 +121,101 @@ env:
 
 ### 5. Audit Configuration
 
-Controls history and logging:
+Every tool and resource invocation is recorded: the call, its arguments, the
+policy decision and rule that produced it, and the outcome. Nothing is opt-in —
+leaving this block out gives you the defaults below, not silence.
 
 ```yaml
 audit:
   history_db_path: ~/.local/state/anvilmcp/history.db
-  retention_days: 30         # Keep history for 30 days
-  max_total_bytes: 1073741824 # 1 GB total storage
+  retention_days: 30          # Drop records older than this (0 = keep forever)
+  max_total_bytes: 1073741824 # 1 GB; oldest rows dropped first once exceeded
 
-  no_store_output:           # Don't store output of these tools
+  jsonl_mirror_path: ""       # Also append completed records as JSON Lines
+  fail_closed: false          # Refuse a call if its record can't be written
+
+  no_store_output:            # Record the call, but not its output preview
     - fs.read
     - fs.list
 
-  no_store_tools:            # Don't record these tools at all
+  no_store_tools:             # Don't record these at all
     - policy.show
 ```
+
+`history_db_path` here overrides the `--history-db` flag: the policy is the
+cluster-controlled layer, so where the trail lands is the operator's call.
+A leading `~` is expanded.
+
+#### Why this matters more than the other sections
+
+The path and exec rules above gate tool *arguments*. They do not gate what an
+allowed program then does. `exec.shell` with `cmd: python3` is permitted by the
+default policy, and that interpreter can read any path the container user can —
+`paths.deny` included. The persistent kernel is the same story by design: only
+the interpreter launch is policy-gated.
+
+So treat the first four sections as guardrails against accident, and this one
+as the control that still holds against intent. A record whose `decision` is
+`unmediated` is a call no chokepoint evaluated; those are the ones worth
+alerting on.
+
+#### What is stored
+
+| Column | Notes |
+|---|---|
+| `args_json` | Arguments, with keys matching `env.redact_patterns` replaced by `[REDACTED]`. Values over 4 KB are truncated; a blob over 16 KB is replaced by a SHA-256 digest plus the key names. |
+| `decision` | `allow`, `deny`, or `unmediated` (no chokepoint evaluated the call). |
+| `policy_rule` | The exact rule that decided it, e.g. `paths.deny:/etc/**`. |
+| `status` | `running`, `ok`, `error`, `denied`, `killed`. A denial is always stored as `denied`, never as a generic error. |
+| `stdout_preview` / `stderr_preview` | First 16 KB, unless the tool is in `no_store_output`. Byte counts are recorded either way. |
+
+Redaction is storage hygiene, not a guarantee: a secret passed as a positional
+value under an innocuous key is recorded as given. The database and the JSONL
+mirror are created `0600` in a `0700` directory on that basis.
+
+#### Operational notes
+
+- A record is written *before* the handler runs, so a call that panics, hangs,
+  or is cancelled still leaves evidence it was attempted. Writes are detached
+  from the request context — a client that disconnects cannot drop its own
+  record.
+- Watch `anvilmcp_audit_writes_total{result="failed"}`. Non-zero means calls
+  are executing without a durable record, unless `fail_closed` is set.
+- `max_total_bytes` will not prune below the 100 most recent records. A cap too
+  small to satisfy is logged as a warning and left unsatisfied, rather than
+  grinding the trail away hourly to meet it.
+
+#### Reading the trail
+
+```bash
+anvilmcp history list                      # recent calls, newest first
+anvilmcp history list --denied             # only what policy refused
+anvilmcp history list --unmediated         # only what no chokepoint evaluated
+anvilmcp history list --tool exec.shell --since 24h
+anvilmcp history show <id>                 # one call in full
+anvilmcp history tail                      # follow live
+```
+
+`--json` on any of them emits machine-readable output with the stored
+arguments re-embedded as a nested object, so `jq` can reach into them:
+
+```bash
+anvilmcp history list --json | jq -r '.[] | select(.decision=="unmediated") | .args.code'
+```
+
+These read the same database `anvilmcp serve` writes, resolving the path the
+same way (`audit.history_db_path` over `--history-db`, `~` expanded). They open
+it **read-only** and fail if it does not exist, rather than creating an empty
+one and reporting a quiet "no records" for what is actually a wrong path.
+
+`tail` prints a line when a call starts and another when it finishes, so a call
+that hangs shows up as a `running` line with no terminal partner. Calls already
+in flight when you start tailing are included.
+
+**There is deliberately no `history.*` MCP tool.** The model is the audited
+party; giving it a read interface onto its own trail would let it enumerate
+what the operator can see. Access is out-of-band: the CLI, the database, or the
+JSONL mirror.
 
 ## Testing Your Policy
 

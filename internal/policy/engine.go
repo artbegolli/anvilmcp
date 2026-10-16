@@ -248,6 +248,26 @@ func (e *Engine) FilterEnv(name, value string) FilterEnvDecision {
 	return FilterEnvDecision{Allowed: true, Value: value}
 }
 
+// ShouldRedact reports whether a name (an env var, or a tool argument key)
+// looks secret-bearing under env.redact_patterns / env.explicit_deny.
+//
+// Deliberately does not consult env.allow_only: that list is a whitelist for
+// what a child process may inherit, and applying it here would redact every
+// ordinary tool argument from the audit trail.
+func (e *Engine) ShouldRedact(name string) bool {
+	for _, denied := range e.policy.Env.ExplicitDeny {
+		if name == denied {
+			return true
+		}
+	}
+	for _, pattern := range e.redactPatterns {
+		if pattern.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
 // pathMatchesPattern checks if a path matches a glob pattern, supporting ** for recursive matching.
 func pathMatchesPattern(path, pattern string) bool {
 	// Normalize both path and pattern

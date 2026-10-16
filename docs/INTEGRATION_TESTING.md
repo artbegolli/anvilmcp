@@ -75,6 +75,11 @@ MCP resources, the `/metrics` endpoint, streamed exec output via
 `notifications/progress`, and — when enabled — the kernel surface including
 state persistence across separate tool calls.
 
+It also covers the audit trail end to end: calls are driven over MCP, then
+read back by running `anvilmcp history list --json` as a subprocess, so the
+test proves the CLI reads what the server wrote rather than trusting the
+library on both sides.
+
 ### Interactive exploration with MCP Inspector
 
 ```bash

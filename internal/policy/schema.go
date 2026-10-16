@@ -68,6 +68,11 @@ type AuditPolicy struct {
 	MaxTotalBytes   int64    `yaml:"max_total_bytes" json:"max_total_bytes"`
 	NoStoreTools    []string `yaml:"no_store_tools" json:"no_store_tools"`
 	NoStoreOutput   []string `yaml:"no_store_output" json:"no_store_output"`
+
+	// FailClosed refuses a tool call when its audit record cannot be written.
+	// Off by default: a full or read-only state volume would otherwise brick
+	// the session. Turn it on where "no record" must mean "did not happen".
+	FailClosed bool `yaml:"fail_closed" json:"fail_closed"`
 }
 
 // DefaultPolicy returns a safe-by-default policy.
