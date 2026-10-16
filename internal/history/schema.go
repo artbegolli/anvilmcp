@@ -2,6 +2,8 @@ package history
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Record represents a single tool invocation in the history.
@@ -34,8 +36,13 @@ type Record struct {
 }
 
 // NewRecord creates a new history record for a tool invocation.
+//
+// ID is generated here: it is the table's PRIMARY KEY, so leaving it empty
+// made the first insert succeed and every subsequent one fail on a duplicate
+// empty string.
 func NewRecord(mcpSessionID, correlationID, tool string, argsJSON string) *Record {
 	return &Record{
+		ID:             uuid.NewString(),
 		MCPSessionID:   mcpSessionID,
 		CorrelationID:  correlationID,
 		Tool:           tool,

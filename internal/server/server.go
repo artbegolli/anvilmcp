@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/artbegolli/anvilmcp/internal/audit"
 	"github.com/artbegolli/anvilmcp/internal/config"
 	"github.com/artbegolli/anvilmcp/internal/history"
 	"github.com/artbegolli/anvilmcp/internal/kernel"
@@ -31,6 +32,7 @@ type Server struct {
 	policyLoader   *policy.Loader
 	policyEngine   *policy.Engine
 	historyStore   *history.Store
+	auditRecorder  *audit.Recorder
 	metrics        *metrics.Registry
 	kernelMgr      *kernel.Manager
 	mcpServer      *mcpserver.MCPServer
@@ -69,11 +71,34 @@ func NewServer(
 		zap.String("exec_default", effectivePolicy.Exec.Default),
 	)
 
+	// audit.history_db_path in the policy wins over --history-db: the policy
+	// is the cluster-controlled layer, and where the trail lands is the
+	// operator's call rather than the launching user's.
+	if effectivePolicy.Audit.HistoryDBPath != "" {
+		historyDBPath = config.ExpandUser(effectivePolicy.Audit.HistoryDBPath)
+	}
+	auditCfg := effectivePolicy.Audit
+	auditCfg.JSONLMirrorPath = config.ExpandUser(auditCfg.JSONLMirrorPath)
+
 	logger.Info("Initializing history store", zap.String("db_path", historyDBPath))
 	histStore, err := history.NewStore(ctx, historyDBPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize history store: %w", err)
 	}
+
+	auditRecorder, err := audit.NewRecorder(histStore, policyEngine, auditCfg, sessConfig.SessionID, logger, metricsReg)
+	if err != nil {
+		_ = histStore.Close()
+		return nil, fmt.Errorf("failed to initialize audit recorder: %w", err)
+	}
+	auditRecorder.Start(ctx)
+	logger.Info("Audit trail active",
+		zap.String("history_db", historyDBPath),
+		zap.String("jsonl_mirror", auditCfg.JSONLMirrorPath),
+		zap.Int("retention_days", effectivePolicy.Audit.RetentionDays),
+		zap.Bool("fail_closed", effectivePolicy.Audit.FailClosed),
+		zap.Strings("no_store_tools", effectivePolicy.Audit.NoStoreTools),
+	)
 
 	mcpServer := mcpserver.NewMCPServer(
 		"anvilmcp",
@@ -86,10 +111,10 @@ func NewServer(
 	execTools := exec.NewTools(policyEngine, logger, sessConfig, 4, metricsReg)
 	policyToolsHandler := policytools.NewTools(policyEngine, logger)
 
-	registerFilesystemTools(mcpServer, fsTools, logger, metricsReg)
-	registerExecTools(mcpServer, execTools, logger, metricsReg)
-	registerPolicyTools(mcpServer, policyToolsHandler, logger, metricsReg)
-	registerResources(mcpServer, fsTools, policyToolsHandler, logger, metricsReg)
+	registerFilesystemTools(mcpServer, fsTools, logger, metricsReg, auditRecorder)
+	registerExecTools(mcpServer, execTools, logger, metricsReg, auditRecorder)
+	registerPolicyTools(mcpServer, policyToolsHandler, logger, metricsReg, auditRecorder)
+	registerResources(mcpServer, fsTools, policyToolsHandler, logger, metricsReg, auditRecorder)
 
 	// Persistent Python kernels are opt-in (--enable-kernel). Enabling them lets
 	// the model run unmediated code as the container user, so they stay off by
@@ -112,7 +137,7 @@ func NewServer(
 			return nil, fmt.Errorf("failed to initialize kernel manager: %w", err)
 		}
 		kernelMgr = km
-		registerKernelTools(mcpServer, kerneltools.NewTools(km, logger), logger, metricsReg)
+		registerKernelTools(mcpServer, kerneltools.NewTools(km, logger), logger, metricsReg, auditRecorder)
 		logger.Info("Kernel tools enabled", zap.String("python", sessConfig.PythonPath))
 	}
 
@@ -122,6 +147,7 @@ func NewServer(
 		policyLoader:  policyLoader,
 		policyEngine:  policyEngine,
 		historyStore:  histStore,
+		auditRecorder: auditRecorder,
 		metrics:       metricsReg,
 		kernelMgr:     kernelMgr,
 		mcpServer:     mcpServer,
@@ -150,6 +176,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.kernelMgr != nil {
 		s.kernelMgr.ShutdownAll()
 	}
+	if s.auditRecorder != nil {
+		if err := s.auditRecorder.Close(); err != nil {
+			s.logger.Error("Failed to close audit recorder", zap.Error(err))
+		}
+	}
 	if s.historyStore != nil {
 		if err := s.historyStore.Close(); err != nil {
 			s.logger.Error("Failed to close history store", zap.Error(err))
@@ -168,7 +199,12 @@ func (s *Server) PolicyEngine() *policy.Engine {
 	return s.policyEngine
 }
 
-// HistoryStore returns the history store.
+// AuditRecorder returns the audit recorder backing the trail.
+func (s *Server) AuditRecorder() *audit.Recorder {
+	return s.auditRecorder
+}
+
+// HistoryStore returns the audit/history database handle.
 func (s *Server) HistoryStore() *history.Store {
 	return s.historyStore
 }
@@ -192,10 +228,32 @@ func (s *Server) Metrics() *metrics.Registry {
 // tool handlers. Panics are converted to error results so a bug in one tool
 // doesn't take down the whole server; the recovered panic is logged with a
 // stack trace and counted as anvilmcp_panics_total{location="tool:<name>"}.
-func wrapTool(logger *zap.Logger, m *metrics.Registry, name string, h mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
+func wrapTool(logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder, name string, h mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (result *mcp.CallToolResult, err error) {
 		start := time.Now()
 		logger.Info("tool invoked", zap.String("tool", name))
+
+		// Open the audit record before the handler runs, so a call that panics
+		// or never returns still leaves a "running" row behind. Handlers
+		// annotate it with the policy decision via audit.FromContext.
+		var mcpSessionID string
+		if sess := mcpserver.ClientSessionFromContext(ctx); sess != nil {
+			mcpSessionID = sess.SessionID()
+		}
+		ctx, entry, auditErr := rec.Begin(ctx, audit.Call{
+			Tool:         name,
+			MCPSessionID: mcpSessionID,
+			Args:         request.GetArguments(),
+		})
+		if auditErr != nil {
+			// Only reachable under audit.fail_closed.
+			m.ToolInvocations.WithLabelValues(name, "error").Inc()
+			logger.Error("tool refused: audit record unavailable", zap.String("tool", name), zap.Error(auditErr))
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{mcp.NewTextContent(auditErr.Error())},
+				IsError: true,
+			}, auditErr
+		}
 
 		defer func() {
 			if r := recover(); r != nil {
@@ -211,6 +269,10 @@ func wrapTool(logger *zap.Logger, m *metrics.Registry, name string, h mcpserver.
 					IsError: true,
 				}
 			}
+
+			// After the recover block above, so a panic is recorded as the
+			// outcome rather than losing the record entirely.
+			entry.Finish(ctx, auditStatus(result, err))
 
 			m.ToolDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
 			m.ToolInvocations.WithLabelValues(name, toolResult(result, err)).Inc()
@@ -238,11 +300,32 @@ func toolResult(result *mcp.CallToolResult, err error) string {
 	}
 }
 
+// auditStatus maps a tool outcome onto an audit status. A policy denial lands
+// here as a plain error; Entry.Finish promotes it to StatusDenied from the
+// recorded decision, so denials are never filed as generic failures.
+func auditStatus(result *mcp.CallToolResult, err error) string {
+	if err != nil || (result != nil && result.IsError) {
+		return audit.StatusError
+	}
+	return audit.StatusOK
+}
+
 // wrapResource logs reads, records metrics, and recovers panics for MCP
 // resource handlers.
-func wrapResource(logger *zap.Logger, m *metrics.Registry, template string, h mcpserver.ResourceHandlerFunc) mcpserver.ResourceHandlerFunc {
+func wrapResource(logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder, template string, h mcpserver.ResourceHandlerFunc) mcpserver.ResourceHandlerFunc {
 	return func(ctx context.Context, request mcp.ReadResourceRequest) (contents []mcp.ResourceContents, err error) {
 		logger.Info("resource read", zap.String("template", template), zap.String("uri", request.Params.URI))
+
+		// Resources are a second way to read a file; auditing only tools would
+		// leave file:///{+path} reads invisible.
+		ctx, entry, auditErr := rec.Begin(ctx, audit.Call{
+			Tool: "resource:" + template,
+			Args: map[string]any{"uri": request.Params.URI},
+		})
+		if auditErr != nil {
+			m.ResourceReads.WithLabelValues(template, "error").Inc()
+			return nil, auditErr
+		}
 
 		defer func() {
 			if r := recover(); r != nil {
@@ -256,9 +339,12 @@ func wrapResource(logger *zap.Logger, m *metrics.Registry, template string, h mc
 				err = fmt.Errorf("resource %s panicked: %v", template, r)
 			}
 			result := "success"
+			status := audit.StatusOK
 			if err != nil {
 				result = "error"
+				status = audit.StatusError
 			}
+			entry.Finish(ctx, status)
 			m.ResourceReads.WithLabelValues(template, result).Inc()
 		}()
 
@@ -267,9 +353,20 @@ func wrapResource(logger *zap.Logger, m *metrics.Registry, template string, h mc
 }
 
 // wrapResourceTemplate is wrapResource for template-typed handlers.
-func wrapResourceTemplate(logger *zap.Logger, m *metrics.Registry, template string, h mcpserver.ResourceTemplateHandlerFunc) mcpserver.ResourceTemplateHandlerFunc {
+func wrapResourceTemplate(logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder, template string, h mcpserver.ResourceTemplateHandlerFunc) mcpserver.ResourceTemplateHandlerFunc {
 	return func(ctx context.Context, request mcp.ReadResourceRequest) (contents []mcp.ResourceContents, err error) {
 		logger.Info("resource read", zap.String("template", template), zap.String("uri", request.Params.URI))
+
+		// Resources are a second way to read a file; auditing only tools would
+		// leave file:///{+path} reads invisible.
+		ctx, entry, auditErr := rec.Begin(ctx, audit.Call{
+			Tool: "resource:" + template,
+			Args: map[string]any{"uri": request.Params.URI},
+		})
+		if auditErr != nil {
+			m.ResourceReads.WithLabelValues(template, "error").Inc()
+			return nil, auditErr
+		}
 
 		defer func() {
 			if r := recover(); r != nil {
@@ -283,9 +380,12 @@ func wrapResourceTemplate(logger *zap.Logger, m *metrics.Registry, template stri
 				err = fmt.Errorf("resource %s panicked: %v", template, r)
 			}
 			result := "success"
+			status := audit.StatusOK
 			if err != nil {
 				result = "error"
+				status = audit.StatusError
 			}
+			entry.Finish(ctx, status)
 			m.ResourceReads.WithLabelValues(template, result).Inc()
 		}()
 
@@ -293,7 +393,7 @@ func wrapResourceTemplate(logger *zap.Logger, m *metrics.Registry, template stri
 	}
 }
 
-func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, logger *zap.Logger, m *metrics.Registry) {
+func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"fs.list",
@@ -302,7 +402,7 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithString("pattern", mcp.Description("Optional glob pattern to filter results")),
 			mcp.WithBoolean("recursive", mcp.Description("Whether to list recursively")),
 		),
-		wrapTool(logger, m, "fs.list", fsToolListHandler(fsTools)),
+		wrapTool(logger, m, rec, "fs.list", fsToolListHandler(fsTools)),
 	)
 
 	mcpServer.AddTool(
@@ -313,7 +413,7 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithInteger("offset", mcp.Description("Optional byte offset to start reading from")),
 			mcp.WithInteger("length", mcp.Description("Optional number of bytes to read")),
 		),
-		wrapTool(logger, m, "fs.read", fsToolReadHandler(fsTools)),
+		wrapTool(logger, m, rec, "fs.read", fsToolReadHandler(fsTools)),
 	)
 
 	mcpServer.AddTool(
@@ -325,7 +425,7 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithBoolean("create", mcp.Description("Whether to create if missing")),
 			mcp.WithBoolean("overwrite", mcp.Description("Whether to overwrite if exists")),
 		),
-		wrapTool(logger, m, "fs.write", fsToolWriteHandler(fsTools)),
+		wrapTool(logger, m, rec, "fs.write", fsToolWriteHandler(fsTools)),
 	)
 
 	mcpServer.AddTool(
@@ -334,7 +434,7 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithDescription("Get file or directory metadata"),
 			mcp.WithString("path", mcp.Required(), mcp.Description("File or directory path (relative or absolute)")),
 		),
-		wrapTool(logger, m, "fs.stat", fsToolStatHandler(fsTools)),
+		wrapTool(logger, m, rec, "fs.stat", fsToolStatHandler(fsTools)),
 	)
 
 	mcpServer.AddTool(
@@ -344,17 +444,17 @@ func registerFilesystemTools(mcpServer *mcpserver.MCPServer, fsTools *filesystem
 			mcp.WithString("path", mcp.Required(), mcp.Description("Path to delete (relative or absolute)")),
 			mcp.WithBoolean("recursive", mcp.Description("If true, delete directories and their contents")),
 		),
-		wrapTool(logger, m, "fs.delete", fsToolDeleteHandler(fsTools)),
+		wrapTool(logger, m, rec, "fs.delete", fsToolDeleteHandler(fsTools)),
 	)
 }
 
-func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytools.Tools, logger *zap.Logger, m *metrics.Registry) {
+func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytools.Tools, logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"policy.show",
 			mcp.WithDescription("Display the current effective security policy"),
 		),
-		wrapTool(logger, m, "policy.show", policyToolShowHandler(policyTools)),
+		wrapTool(logger, m, rec, "policy.show", policyToolShowHandler(policyTools)),
 	)
 
 	mcpServer.AddTool(
@@ -365,11 +465,11 @@ func registerPolicyTools(mcpServer *mcpserver.MCPServer, policyTools *policytool
 			mcp.WithString("path", mcp.Description("File path (required for read/write actions)")),
 			mcp.WithString("cmd", mcp.Description("Command name (required for exec actions)")),
 		),
-		wrapTool(logger, m, "policy.test", policyToolTestHandler(policyTools)),
+		wrapTool(logger, m, rec, "policy.test", policyToolTestHandler(policyTools)),
 	)
 }
 
-func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, logger *zap.Logger, m *metrics.Registry) {
+func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder) {
 	mcpServer.AddTool(
 		mcp.NewTool(
 			"exec.shell",
@@ -380,7 +480,7 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, lo
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		wrapTool(logger, m, "exec.shell", execToolShellHandler(execTools, m)),
+		wrapTool(logger, m, rec, "exec.shell", execToolShellHandler(execTools, m)),
 	)
 
 	mcpServer.AddTool(
@@ -394,7 +494,7 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, lo
 			mcp.WithObject("env", mcp.Description("Optional environment variables to set")),
 			mcp.WithInteger("timeout_seconds", mcp.Description("Optional timeout in seconds")),
 		),
-		wrapTool(logger, m, "exec.script", execToolScriptHandler(execTools, m)),
+		wrapTool(logger, m, rec, "exec.script", execToolScriptHandler(execTools, m)),
 	)
 }
 
@@ -406,7 +506,7 @@ func registerExecTools(mcpServer *mcpserver.MCPServer, execTools *exec.Tools, lo
 // without going through the model. The MCP spec encourages this duality so
 // clients that don't speak resources still work, and clients that do can
 // expose richer UX. See https://modelcontextprotocol.io/specification.
-func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, policyTools *policytools.Tools, logger *zap.Logger, m *metrics.Registry) {
+func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools, policyTools *policytools.Tools, logger *zap.Logger, m *metrics.Registry, rec *audit.Recorder) {
 	mcpServer.AddResource(
 		mcp.NewResource(
 			"policy://effective",
@@ -414,7 +514,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			mcp.WithResourceDescription("Current effective policy (cluster ∩ user) governing path, exec, and env decisions"),
 			mcp.WithMIMEType("application/json"),
 		),
-		wrapResource(logger, m, "policy://effective", policyResourceHandler(policyTools)),
+		wrapResource(logger, m, rec, "policy://effective", policyResourceHandler(policyTools)),
 	)
 
 	mcpServer.AddResourceTemplate(
@@ -423,7 +523,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			"Workspace file content",
 			mcp.WithTemplateDescription("Full contents of a file at the given absolute path; use the fs.read tool for paged reads"),
 		),
-		wrapResourceTemplate(logger, m, "file:///{+path}", fileResourceHandler(fsTools)),
+		wrapResourceTemplate(logger, m, rec, "file:///{+path}", fileResourceHandler(fsTools)),
 	)
 
 	mcpServer.AddResourceTemplate(
@@ -433,7 +533,7 @@ func registerResources(mcpServer *mcpserver.MCPServer, fsTools *filesystem.Tools
 			mcp.WithTemplateDescription("Type, size, mtime, and permissions for a file or directory at the given absolute path"),
 			mcp.WithTemplateMIMEType("application/json"),
 		),
-		wrapResourceTemplate(logger, m, "stat:///{+path}", statResourceHandler(fsTools)),
+		wrapResourceTemplate(logger, m, rec, "stat:///{+path}", statResourceHandler(fsTools)),
 	)
 }
 

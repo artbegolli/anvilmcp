@@ -57,6 +57,8 @@ All PRs must:
 - `Dockerfile` - Integration-test container definition (not distributed)
 - `Makefile` - Build, test, and Docker targets
 - `internal/policy/engine.go` - Core security policy engine
+- `internal/audit/` - Audit trail: records every tool/resource call with its policy decision
+- `internal/history/` - SQLite store behind the audit trail
 - `internal/tools/` - Filesystem and execution tools
 - `tests/e2e/` - End-to-end suite (drives the real binary over MCP; runs in CI)
 - `docs/INTEGRATION_TESTING.md` - Build, run, and exercise the server
@@ -70,6 +72,14 @@ AnvilMCP uses a **three-chokepoint security model**:
 3. **Environment Filtering** - Sanitizes environment variables
 
 All paths and commands MUST pass policy validation before execution.
+
+**Know the limit:** these chokepoints gate tool *arguments*, not what an
+allowed program subsequently does. `exec.shell` with `cmd: python3` is allowed
+by the default policy, and that interpreter reaches any path the container user
+can. The kernel surface is unmediated by design. Treat the chokepoints as
+guardrails against accident; the audit trail (`internal/audit`) is the control
+that holds against intent, which is why it is not optional and why
+`no_store_tools` defaults to empty.
 
 ## Development Workflow
 
@@ -104,10 +114,12 @@ go test ./tests/e2e/               # Run end-to-end tests (add -short to skip)
 - [x] 22/22 tests passing
 
 ### Phase 2: Planned
-- [ ] Python kernel execution (Jupyter kernel support)
+- [x] Python kernel execution (owned stdlib REPL harness, not Jupyter)
+- [x] Metrics and monitoring (`/metrics`, panic recovery, auto-restart)
+- [x] Audit trail over every tool and resource call
+- [ ] `history.*` tools and CLI to surface the audit trail
+- [ ] Per-process path enforcement (landlock) so policy binds inside interpreters
 - [ ] Enhanced authentication and authorization
-- [ ] Audit logging integration
-- [ ] Metrics and monitoring
 - [ ] Advanced glob pattern matching with ripgrep
 - [ ] Streaming responses for large outputs
 

@@ -21,7 +21,7 @@ func TestWrapToolRecoversPanic(t *testing.T) {
 		panic("boom")
 	}
 
-	wrapped := wrapTool(logger, m, "test.tool", handler)
+	wrapped := wrapTool(logger, m, nil, "test.tool", handler)
 	result, err := wrapped(context.Background(), mcp.CallToolRequest{})
 
 	if err == nil {
@@ -54,7 +54,7 @@ func TestWrapToolRecordsSuccess(t *testing.T) {
 		return &mcp.CallToolResult{}, nil
 	}
 
-	wrapped := wrapTool(logger, m, "test.tool", handler)
+	wrapped := wrapTool(logger, m, nil, "test.tool", handler)
 	if _, err := wrapped(context.Background(), mcp.CallToolRequest{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestWrapToolClassifiesErrors(t *testing.T) {
 	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return nil, errors.New("bad")
 	}
-	wrapped := wrapTool(zap.NewNop(), m, "t", handler)
+	wrapped := wrapTool(zap.NewNop(), m, nil, "t", handler)
 	_, _ = wrapped(context.Background(), mcp.CallToolRequest{})
 
 	if got := testutil.ToFloat64(m.ToolInvocations.WithLabelValues("t", "error")); got != 1 {
@@ -84,7 +84,7 @@ func TestWrapToolClassifiesErrors(t *testing.T) {
 	handler = func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{IsError: true}, nil
 	}
-	wrapped = wrapTool(zap.NewNop(), m, "t", handler)
+	wrapped = wrapTool(zap.NewNop(), m, nil, "t", handler)
 	_, _ = wrapped(context.Background(), mcp.CallToolRequest{})
 
 	if got := testutil.ToFloat64(m.ToolInvocations.WithLabelValues("t", "tool_error")); got != 1 {
@@ -98,7 +98,7 @@ func TestWrapResourceRecoversPanic(t *testing.T) {
 		panic("splat")
 	}
 
-	wrapped := wrapResource(zap.NewNop(), m, "test://res", handler)
+	wrapped := wrapResource(zap.NewNop(), m, nil, "test://res", handler)
 	_, err := wrapped(context.Background(), mcp.ReadResourceRequest{})
 
 	if err == nil {

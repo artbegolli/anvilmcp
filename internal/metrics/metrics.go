@@ -36,6 +36,12 @@ type Registry struct {
 	ExecDuration     prometheus.Histogram
 	ExecStreamChunks *prometheus.CounterVec
 
+	// Audit trail. Monitor these: a rising failed count means tool calls are
+	// running without being recorded.
+	AuditWrites  *prometheus.CounterVec
+	AuditSkipped prometheus.Counter
+	AuditPruned  prometheus.Counter
+
 	// Reliability
 	Panics   *prometheus.CounterVec
 	Restarts *prometheus.CounterVec
@@ -110,6 +116,21 @@ func build(reg *prometheus.Registry) *Registry {
 			Name: "anvilmcp_exec_stream_chunks_total",
 			Help: "Output chunks streamed to clients via notifications/progress, labeled by delivery result. Absence of samples means no client opted into streaming; a rising failed count means chunks are being dropped (streaming is best-effort; the final response is unaffected).",
 		}, []string{"result"}), // sent | failed
+
+		AuditWrites: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "anvilmcp_audit_writes_total",
+			Help: "Audit trail writes, labeled by op (insert, update, mirror, prune) and result (ok, failed). A non-zero failed count means the audit trail is incomplete: calls are executing without a durable record unless audit.fail_closed is set.",
+		}, []string{"op", "result"}),
+
+		AuditSkipped: factory.NewCounter(prometheus.CounterOpts{
+			Name: "anvilmcp_audit_skipped_total",
+			Help: "Invocations deliberately not recorded because the tool is listed in audit.no_store_tools.",
+		}),
+
+		AuditPruned: factory.NewCounter(prometheus.CounterOpts{
+			Name: "anvilmcp_audit_pruned_total",
+			Help: "Audit rows deleted by audit.retention_days or audit.max_total_bytes enforcement.",
+		}),
 
 		Panics: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "anvilmcp_panics_total",

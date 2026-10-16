@@ -3,9 +3,11 @@ package history
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 	"go.uber.org/zap"
@@ -14,6 +16,7 @@ import (
 // Store manages the command history database.
 type Store struct {
 	db     *sql.DB
+	dbPath string
 	logger *zap.Logger
 }
 
@@ -36,7 +39,7 @@ func NewStore(ctx context.Context, dbPath string, logger *zap.Logger) (*Store, e
 		return nil, fmt.Errorf("failed to connect to history database: %w", err)
 	}
 
-	s := &Store{db: db, logger: logger}
+	s := &Store{db: db, dbPath: dbPath, logger: logger}
 
 	// Initialize schema
 	if err := s.initSchema(ctx); err != nil {
@@ -125,10 +128,17 @@ func (s *Store) InsertRecord(ctx context.Context, rec *Record) error {
 }
 
 // UpdateRecord updates an existing history record.
+//
+// decision, policy_rule and cwd are in the SET list because they are only
+// known once the handler has run: the record is inserted when the call starts,
+// and the chokepoints annotate it mid-flight. Leaving them out (as this
+// originally did) silently dropped the policy verdict — the single most
+// important column in the table — on every completed call.
 func (s *Store) UpdateRecord(ctx context.Context, rec *Record) error {
 	query := `
 	UPDATE history SET
 		ts_end = ?, status = ?, exit_code = ?, duration_ms = ?,
+		decision = ?, policy_rule = ?, cwd = ?,
 		stdout_bytes = ?, stderr_bytes = ?, stdout_truncated = ?,
 		stderr_truncated = ?, stdout_preview = ?, stderr_preview = ?,
 		stdout_blob_path = ?, stderr_blob_path = ?
@@ -137,6 +147,7 @@ func (s *Store) UpdateRecord(ctx context.Context, rec *Record) error {
 
 	_, err := s.db.ExecContext(ctx, query,
 		rec.TimestampEnd, rec.Status, rec.ExitCode, rec.DurationMS,
+		rec.Decision, rec.PolicyRule, rec.CWD,
 		rec.StdoutBytes, rec.StderrBytes, rec.StdoutTruncated,
 		rec.StderrTruncated, rec.StdoutPreview, rec.StderrPreview,
 		rec.StdoutBlobPath, rec.StderrBlobPath, rec.ID,
@@ -149,27 +160,53 @@ func (s *Store) UpdateRecord(ctx context.Context, rec *Record) error {
 	return nil
 }
 
-// GetRecord retrieves a single history record by ID.
-func (s *Store) GetRecord(ctx context.Context, id string) (*Record, error) {
+// recordColumns is the explicit column list every read uses, in Record field
+// order. The reads used to be "SELECT *", which silently depended on the
+// CREATE TABLE order and broke on the trailing created_at column: 26 columns
+// scanned into 25 destinations, so every Get/List returned a scan error.
+const recordColumns = `
+	id, mcp_session_id, correlation_id, chat_session_id,
+	ts_start, ts_end, status, tool, args_json, decision,
+	policy_rule, exit_code, duration_ms, stdout_bytes, stderr_bytes,
+	stdout_truncated, stderr_truncated, stdout_preview, stderr_preview,
+	stdout_blob_path, stderr_blob_path, cwd, env_snapshot_hash, pinned, tags`
+
+// Queries are declared as constant expressions rather than assembled at call
+// time: the column list is fixed, and keeping it constant means no SQL string
+// is ever built from a variable.
+const (
+	selectRecordByID = `SELECT ` + recordColumns + ` FROM history WHERE id = ?`
+	selectRecent     = `SELECT ` + recordColumns + ` FROM history ORDER BY ts_start DESC LIMIT ?`
+	selectByTool     = `SELECT ` + recordColumns + ` FROM history WHERE tool = ? ORDER BY ts_start DESC LIMIT ?`
+)
+
+func scanRecord(sc interface{ Scan(...any) error }) (*Record, error) {
 	rec := &Record{}
-	err := s.db.QueryRowContext(ctx, "SELECT * FROM history WHERE id = ?", id).Scan(
+	err := sc.Scan(
 		&rec.ID, &rec.MCPSessionID, &rec.CorrelationID, &rec.ChatSessionID,
 		&rec.TimestampStart, &rec.TimestampEnd, &rec.Status, &rec.Tool, &rec.ArgsJSON, &rec.Decision,
 		&rec.PolicyRule, &rec.ExitCode, &rec.DurationMS, &rec.StdoutBytes, &rec.StderrBytes,
 		&rec.StdoutTruncated, &rec.StderrTruncated, &rec.StdoutPreview, &rec.StderrPreview,
 		&rec.StdoutBlobPath, &rec.StderrBlobPath, &rec.CWD, &rec.EnvSnapshotHash, &rec.Pinned, &rec.Tags,
 	)
+	if err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
 
-	if err == sql.ErrNoRows {
+// GetRecord retrieves a single history record by ID.
+func (s *Store) GetRecord(ctx context.Context, id string) (*Record, error) {
+	rec, err := scanRecord(s.db.QueryRowContext(ctx, selectRecordByID, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("record not found")
 	}
-
 	return rec, err
 }
 
 // ListRecent returns the N most recent history records.
 func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT * FROM history ORDER BY ts_start DESC LIMIT ?", limit)
+	rows, err := s.db.QueryContext(ctx, selectRecent, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -177,14 +214,7 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
 
 	var records []*Record
 	for rows.Next() {
-		rec := &Record{}
-		err := rows.Scan(
-			&rec.ID, &rec.MCPSessionID, &rec.CorrelationID, &rec.ChatSessionID,
-			&rec.TimestampStart, &rec.TimestampEnd, &rec.Status, &rec.Tool, &rec.ArgsJSON, &rec.Decision,
-			&rec.PolicyRule, &rec.ExitCode, &rec.DurationMS, &rec.StdoutBytes, &rec.StderrBytes,
-			&rec.StdoutTruncated, &rec.StderrTruncated, &rec.StdoutPreview, &rec.StderrPreview,
-			&rec.StdoutBlobPath, &rec.StderrBlobPath, &rec.CWD, &rec.EnvSnapshotHash, &rec.Pinned, &rec.Tags,
-		)
+		rec, err := scanRecord(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -192,4 +222,130 @@ func (s *Store) ListRecent(ctx context.Context, limit int) ([]*Record, error) {
 	}
 
 	return records, rows.Err()
+}
+
+// ListByTool returns the N most recent records for a single tool. Used by the
+// audit tests and by `anvilmcp history` once that lands.
+func (s *Store) ListByTool(ctx context.Context, tool string, limit int) ([]*Record, error) {
+	rows, err := s.db.QueryContext(ctx, selectByTool, tool, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var records []*Record
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, rec)
+	}
+
+	return records, rows.Err()
+}
+
+// ErrSizeCapUnreachable reports that audit.max_total_bytes cannot be satisfied
+// without destroying the whole trail. Prune stops and surfaces this instead:
+// an audit log that silently erases itself to hit a misconfigured byte cap is
+// worse than one that is over budget and says so.
+var ErrSizeCapUnreachable = errors.New("audit size cap cannot be met")
+
+// minRetainedRecords is the floor the size cap will not prune below.
+const minRetainedRecords = 100
+
+// Prune enforces audit.retention_days and audit.max_total_bytes.
+//
+// Retention is applied first (cheap, bounded by time), then the size cap: rows
+// are deleted oldest-first in batches until the database file fits, with a
+// VACUUM afterwards because SQLite does not return freed pages to the
+// filesystem on its own. Either limit is skipped when its value is <= 0.
+func (s *Store) Prune(ctx context.Context, retentionDays int, maxTotalBytes int64) (int64, error) {
+	var deleted int64
+
+	if retentionDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -retentionDays).UnixNano()
+		res, err := s.db.ExecContext(ctx, "DELETE FROM history WHERE ts_start < ? AND pinned = 0", cutoff)
+		if err != nil {
+			return deleted, fmt.Errorf("retention prune: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		deleted += n
+	}
+
+	if maxTotalBytes > 0 {
+		// Bounded loop: each pass drops the oldest unpinned batch, vacuums, and
+		// re-measures. Stops when the file fits, when there is nothing left to
+		// delete, when a pass fails to shrink the file, or once the floor of
+		// recent records is reached.
+		const (
+			batch     = int64(200)
+			maxPasses = 200
+		)
+		prevSize := int64(-1)
+		for pass := 0; pass < maxPasses; pass++ {
+			size, err := s.sizeBytes()
+			if err != nil {
+				return deleted, fmt.Errorf("size prune: measure: %w", err)
+			}
+			if size <= maxTotalBytes {
+				return deleted, nil
+			}
+			if prevSize >= 0 && size >= prevSize {
+				// The last pass deleted rows without shrinking the file, so
+				// the cap is below SQLite's own floor for this schema. Stop
+				// rather than grinding the trail away to meet it.
+				return deleted, fmt.Errorf("%w: %d bytes on disk with max_total_bytes=%d", ErrSizeCapUnreachable, size, maxTotalBytes)
+			}
+			prevSize = size
+
+			var remaining int64
+			if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM history WHERE pinned = 0").Scan(&remaining); err != nil {
+				return deleted, fmt.Errorf("size prune: count: %w", err)
+			}
+			if remaining <= minRetainedRecords {
+				return deleted, fmt.Errorf("%w: %d bytes on disk with max_total_bytes=%d, holding the %d most recent records", ErrSizeCapUnreachable, size, maxTotalBytes, remaining)
+			}
+
+			limit := batch
+			if over := remaining - minRetainedRecords; over < limit {
+				limit = over
+			}
+
+			res, err := s.db.ExecContext(ctx, `
+				DELETE FROM history WHERE id IN (
+					SELECT id FROM history WHERE pinned = 0 ORDER BY ts_start ASC LIMIT ?
+				)`, limit)
+			if err != nil {
+				return deleted, fmt.Errorf("size prune: %w", err)
+			}
+			n, _ := res.RowsAffected()
+			if n == 0 {
+				return deleted, nil
+			}
+			deleted += n
+			if _, err := s.db.ExecContext(ctx, "VACUUM"); err != nil {
+				return deleted, fmt.Errorf("vacuum: %w", err)
+			}
+		}
+	}
+
+	return deleted, nil
+}
+
+// sizeBytes reports the on-disk size of the database, including the WAL, which
+// is where recent writes live until a checkpoint.
+func (s *Store) sizeBytes() (int64, error) {
+	var total int64
+	for _, suffix := range []string{"", "-wal"} {
+		info, err := os.Stat(s.dbPath + suffix)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, err
+		}
+		total += info.Size()
+	}
+	return total, nil
 }
