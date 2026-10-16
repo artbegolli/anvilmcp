@@ -58,7 +58,7 @@ All PRs must:
 - `Makefile` - Build, test, and Docker targets
 - `internal/policy/engine.go` - Core security policy engine
 - `internal/tools/` - Filesystem and execution tools
-- `scripts/test-mcp-docker.sh` - Integration test suite
+- `tests/e2e/` - End-to-end suite (drives the real binary over MCP; runs in CI)
 - `docs/INTEGRATION_TESTING.md` - Build, run, and exercise the server
 
 ### Security Model
@@ -90,7 +90,7 @@ make docker-run      # Run in Docker container
 ```bash
 make test                           # Run all tests with race detector
 make coverage                       # Generate coverage report
-./scripts/test-mcp-docker.sh       # Run integration tests
+go test ./tests/e2e/               # Run end-to-end tests (add -short to skip)
 ```
 
 ## Current Implementation Status

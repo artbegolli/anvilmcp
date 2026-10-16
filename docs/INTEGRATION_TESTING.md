@@ -56,14 +56,24 @@ quick liveness check, hit the server root:
 curl -i http://localhost:8080/
 ```
 
-### Tool call with the bundled script
+### Automated end-to-end suite
 
 ```bash
-./scripts/test-mcp-docker.sh
+go test ./tests/e2e/           # or: go test -race ./...
+go test -short ./tests/e2e/    # skip it
 ```
 
-Runs the full tool surface (fs.list, fs.read, fs.write, exec.shell, policy.test)
-against a running server and prints a pass/fail summary.
+`tests/e2e/` is the real suite: it builds the server binary, starts it on an
+ephemeral port with a scoped policy and temp workspace, and drives it over the
+MCP Streamable HTTP endpoint as a client would — asserting on actual responses.
+It runs as part of the normal `go test ./...` CI job, so it cannot silently rot.
+
+It covers the initialize handshake and tool registry, the filesystem round trip
+(write → read → stat → list → delete), path and exec policy denials, exec
+timeouts (exit 124, including reaping forked workers), the policy tools,
+MCP resources, the `/metrics` endpoint, streamed exec output via
+`notifications/progress`, and — when enabled — the kernel surface including
+state persistence across separate tool calls.
 
 ### Interactive exploration with MCP Inspector
 
