@@ -4,7 +4,7 @@
 # See docs/INTEGRATION_TESTING.md.
 
 # Build stage
-FROM golang:1.25.5-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 
 WORKDIR /app
 

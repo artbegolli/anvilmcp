@@ -7,7 +7,7 @@ The goal is a reproducible loop: build → run → exercise → tear down.
 
 ## 0. Prerequisites
 
-- Go 1.25.5+
+- Go 1.26.11+
 - Docker (for the containerised flow)
 - `jq` (for inspecting JSON responses)
 - Optional: Node 20+ if you want to use [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
